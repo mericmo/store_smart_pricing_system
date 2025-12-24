@@ -19,7 +19,7 @@ from prediction_manager import PredictionManager
 
 from typing import Dict, List, Optional, Union, Any
 from utils.time_utils import str_time_to_30min_slot
-
+from utils import common
 class HRMain(object):
     """
     负责数据处理、特征工程、模型训练和预测
@@ -215,7 +215,7 @@ class HRMain(object):
 
                     return predictions
                 except Exception as e:
-                    self.log.error(f'预测失败1: {str(e)}')
+                    self.log.error(f'复用模型预测失败: {str(e)}')
                     return None
             else:
                 self.log.error('没有可用的模型进行预测')
@@ -240,7 +240,7 @@ class HRMain(object):
 
                 return predictions
             except Exception as e:
-                self.log.error(f'预测失败: {str(e)}')
+                self.log.error(f'验证集预测失败: {str(e)}')
                 return None
 
     def run_discount_optimization(self, input_params):
@@ -397,7 +397,8 @@ class HRMain(object):
 
         # 保存预测结果
         if not res.empty:
-            result_path = self.params.result_dir_path / f'prediction_{product_code}_{predict_time}.csv'.replace(":", '')
+            file_name = common.clean_filename(f'prediction_{product_code}_{predict_time}.csv')
+            result_path = self.params.result_dir_path / file_name
             res.to_csv(result_path, index=False, encoding='utf-8')
             self.log.info(f"预测结果已保存到: {result_path}")
 

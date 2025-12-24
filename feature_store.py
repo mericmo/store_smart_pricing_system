@@ -144,7 +144,8 @@ class FeatureStore:
         df['节假日后1天'] = df['是否节假日'].shift(-1).fillna(0)
         
         # 节假日连续天数
-        df['节假日连续天数'] = self._calculate_holiday_streak(df)
+        df = self._calculate_holiday_streak(df)
+        # df['节假日连续天数'] = self._calculate_holiday_streak(df)
         
         return df
     
@@ -183,17 +184,33 @@ class FeatureStore:
             return '夏季'
         else:
             return '秋季'
-    
+
     def _calculate_holiday_streak(self, df):
-        """计算节假日连续天数"""
-        streak = 0
-        streaks = []
-        
-        for is_holiday in df['是否节假日']:
-            if is_holiday == 1:
-                streak += 1
-            else:
-                streak = 0
-            streaks.append(streak)
-        
-        return streaks
+        """计算节假日连续天数特征（简洁版本）"""
+        if '是否节假日' not in df.columns:
+            raise ValueError("DataFrame必须包含'是否节假日'列")
+
+        # 按日期序号去重处理
+        date_df = df.drop_duplicates('日期序号')[['日期序号', '是否节假日']].sort_values('日期序号')
+
+        # 计算连续节假日分组
+        # 当节假日状态变化时（1->0或0->1），创建新的分组
+        date_df['group'] = (date_df['是否节假日'] != date_df['是否节假日'].shift()).cumsum()
+
+        # 只处理节假日分组
+        holiday_groups = date_df[date_df['是否节假日'] == 1]
+
+        # 计算每个节假日分组的长度
+        group_sizes = holiday_groups.groupby('group').size()
+
+        # 创建映射字典
+        streak_map = {}
+        for group_id, size in group_sizes.items():
+            group_dates = holiday_groups[holiday_groups['group'] == group_id]['日期序号'].tolist()
+            for date in group_dates:
+                streak_map[date] = size
+
+        # 映射回原始数据
+        df['节假日连续天数'] = df['日期序号'].map(streak_map).fillna(0).astype(int)
+
+        return df

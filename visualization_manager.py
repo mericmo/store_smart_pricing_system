@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import re
 from pathlib import Path
-
+from utils import common
 # 设置中文字体
 plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
@@ -24,16 +24,7 @@ class VisualizationManager:
         self.log = log
         self.result_dir_path = result_dir_path or Path("output/default/result")
         
-    def clean_filename(self, filename):
-        """清理文件名中的非法字符"""
-        illegal_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
-        for char in illegal_chars:
-            filename = filename.replace(char, '_')
-        filename = re.sub(r'_+', '_', filename)
-        filename = filename.strip('_')
-        if len(filename) > 100:
-            filename = filename[:100]
-        return filename
+
     
     
     def visualize_results(self, results_df):
@@ -640,7 +631,7 @@ class VisualizationManager:
         plt.tight_layout()
         
         # 清理商品名称用于文件名
-        clean_product_name = self.clean_filename(best_product_name)
+        clean_product_name = common.clean_filename(best_product_name)
         
         # 保存单个最准确产品详细曲线图
         single_product_path = self.result_dir_path / f'best_product_{clean_product_name}_detailed.png'

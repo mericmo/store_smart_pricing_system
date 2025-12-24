@@ -94,6 +94,10 @@ class PredictionManager:
             X_pred = X_pred[expected_columns]
 
         X_pred.to_csv("X_pred.csv", encoding='utf-8')
+
+        X_pred = self.hrmain.sales_predictor.standard_scaler_features(X_pred)
+
+        X_pred.to_csv("X_pred_1.csv", encoding='utf-8')
         # 4. 进行预测
         try:
             predictions = model.predict(X_pred)
@@ -107,7 +111,7 @@ class PredictionManager:
                 '预测销量': predictions,
                 '预测时间': datetime.now()
             })
-            feature_cols = ['平均售价','销售金额','售价','实际折扣率','是否促销']
+            feature_cols = ['平均售价', '销售金额', '售价', '实际折扣率', '是否促销']
             for feature in feature_cols:
                 if feature in X_pred.columns:
                     result_df[feature] = X_pred[feature].values

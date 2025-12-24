@@ -39,6 +39,9 @@ class SalesPredictor:
         self.evaluation_results = {}
         self.feature_columns = {}
         self.scalers = {}
+        self.scalers_columns = [
+            "年份", '日期序号','时间窗口','温度','最高温度','最低温度','温度差',
+        ]
         self.label_encoders = {}
         
         # 确保模型目录存在
@@ -48,9 +51,54 @@ class SalesPredictor:
         self.supported_algorithms = [
             'lightgbm', 'xgboost', 'random_forest', 
             'gradient_boosting', 'linear_regression', 
-            'ridge', 'lasso', 'svr'
+            #'ridge', 'lasso', 'svr'
         ]
-    
+    def excute_category_features(self, features_df, target_col):
+        # 选择数值型特征和分类特征
+        numeric_features = self._get_numeric_features(features_df)
+        categorical_features = self._get_categorical_features(features_df)
+
+        # 移除目标变量和标识列
+        feature_columns = [col for col in numeric_features + categorical_features
+                           if col not in ['门店编码', '商品编码', '商品名称', '日期', '销售金额',
+                                          target_col]]  # 需要去掉销售金额，因为单价*数量=销售金额，知道其中两个因子就可以求出第三个因子
+
+        # 准备数据
+        X = features_df[feature_columns].copy()
+
+        # 处理分类特征 - 对每个分类特征进行编码
+        for col in categorical_features:
+            if col in X.columns:
+                if col not in self.label_encoders:
+                    self.label_encoders[col] = LabelEncoder()
+                    # 处理可能的未知值
+                    X[col] = X[col].astype(str)
+                    self.label_encoders[col].fit(X[col])
+
+                X[col] = self.label_encoders[col].transform(X[col])
+        return X, feature_columns, numeric_features, categorical_features
+
+    def standard_scaler_features(self, features_df):
+        # 限制数值范围，避免过大值
+        X = features_df.copy()
+        for col in self.scalers_columns:
+            if col in X.columns:
+                max_val = X[col].quantile(0.99)
+                min_val = X[col].quantile(0.01)
+                X[col] = X[col].clip(min_val, max_val)
+
+        # 标准化数值特征（对某些算法有帮助）
+        if 'standard_scaler' not in self.scalers:
+            self.scalers['standard_scaler'] = StandardScaler()
+            X_scaled = self.scalers['standard_scaler'].fit_transform(X)
+            X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+        else:
+            X_scaled = self.scalers['standard_scaler'].transform(X)
+            X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+
+        return X_scaled
+
+
     def prepare_features_for_training(self, features_df, target_col='销售数量', test_size=0.2, random_state=42):
         """
         准备训练特征
@@ -64,28 +112,29 @@ class SalesPredictor:
         返回:
         - X_train, X_test, y_train, y_test, feature_columns
         """
+        X, feature_columns, numeric_features, categorical_features = self.excute_category_features(features_df, target_col)
         # 选择数值型特征和分类特征
-        numeric_features = self._get_numeric_features(features_df)
-        categorical_features = self._get_categorical_features(features_df)
-        
-        # 移除目标变量和标识列
-        feature_columns = [col for col in numeric_features + categorical_features 
-                          if col not in ['门店编码', '商品编码', '商品名称', '日期', '销售金额', target_col]] #需要去掉销售金额，因为单价*数量=销售金额，知道其中两个因子就可以求出第三个因子
-        
-        # 准备数据
-        X = features_df[feature_columns].copy()
+        # numeric_features = self._get_numeric_features(features_df)
+        # categorical_features = self._get_categorical_features(features_df)
+        #
+        # # 移除目标变量和标识列
+        # feature_columns = [col for col in numeric_features + categorical_features
+        #                   if col not in ['门店编码', '商品编码', '商品名称', '日期', '销售金额', target_col]] #需要去掉销售金额，因为单价*数量=销售金额，知道其中两个因子就可以求出第三个因子
+        #
+        # # 准备数据
+        # X = features_df[feature_columns].copy()
         y = features_df[target_col]
         
         # 处理分类特征 - 对每个分类特征进行编码
-        for col in categorical_features:
-            if col in X.columns:
-                if col not in self.label_encoders:
-                    self.label_encoders[col] = LabelEncoder()
-                    # 处理可能的未知值
-                    X[col] = X[col].astype(str)
-                    self.label_encoders[col].fit(X[col])
-                
-                X[col] = self.label_encoders[col].transform(X[col])
+        # for col in categorical_features:
+        #     if col in X.columns:
+        #         if col not in self.label_encoders:
+        #             self.label_encoders[col] = LabelEncoder()
+        #             # 处理可能的未知值
+        #             X[col] = X[col].astype(str)
+        #             self.label_encoders[col].fit(X[col])
+        #
+        #         X[col] = self.label_encoders[col].transform(X[col])
         
         # 处理无穷大值和过大的值
         X = X.replace([np.inf, -np.inf], np.nan)
@@ -96,10 +145,10 @@ class SalesPredictor:
         y = y.fillna(0)
         
         # 限制数值范围，避免过大值
-        for col in X.select_dtypes(include=[np.number]).columns:
-            max_val = X[col].quantile(0.99)
-            min_val = X[col].quantile(0.01)
-            X[col] = X[col].clip(min_val, max_val)
+        # for col in X.select_dtypes(include=[np.number]).columns:
+        #     max_val = X[col].quantile(0.99)
+        #     min_val = X[col].quantile(0.01)
+        #     X[col] = X[col].clip(min_val, max_val)
 
         # 标准化数值特征（对某些算法有帮助）
         # if 'standard_scaler' not in self.scalers:
@@ -111,13 +160,14 @@ class SalesPredictor:
         #     X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
         #
         # # 关键修改：确保数据按时间顺序排序后再划分
+        X_scaled = self.standard_scaler_features(X)
         # # 添加日期索引用于排序
-        # if '日期' in features_df.columns:
-        #     # 按日期排序整个数据集
-        #     sorted_indices = features_df['日期'].sort_values().index
-        #     X_scaled = X_scaled.loc[sorted_indices]
-        #     y = y.loc[sorted_indices]
-        X_scaled = X.copy()
+        if '日期' in features_df.columns:
+            # 按日期排序整个数据集
+            sorted_indices = features_df['日期'].sort_values().index
+            X_scaled = X_scaled.loc[sorted_indices]
+            y = y.loc[sorted_indices]
+
         # 划分训练测试集 - 基于时间顺序的最后20%
         split_index = int(len(X_scaled) * (1 - test_size))
         X_train = X_scaled.iloc[:split_index]
@@ -155,7 +205,7 @@ class SalesPredictor:
         X_train, X_test, y_train, y_test, feature_columns = self.prepare_features_for_training(
             features_df, target_col
         )
-        
+        X_train.to_csv('X_train.csv',encoding='utf-8')
         # 创建数据集
         train_data = lgb.Dataset(X_train, label=y_train, categorical_feature='auto')
         test_data = lgb.Dataset(X_test, label=y_test, reference=train_data)
@@ -414,39 +464,41 @@ class SalesPredictor:
         - 所有训练好的模型字典
         """
         print("开始训练所有模型...")
-        
-        # 训练LightGBM
-        print("训练LightGBM模型...")
-        self.train_lightgbm(features_df, target_col)
-        
-        # 训练XGBoost
-        print("训练XGBoost模型...")
-        self.train_xgboost(features_df, target_col)
-        
-        # 训练随机森林
-        print("训练随机森林模型...")
-        self.train_random_forest(features_df, target_col)
-        
-        # 训练梯度提升
-        print("训练梯度提升模型...")
-        self.train_gradient_boosting(features_df, target_col)
-        
-        # 训练线性回归
-        print("训练线性回归模型...")
-        self.train_linear_regression(features_df, target_col)
-        
-        # 训练岭回归
-        print("训练岭回归模型...")
-        self.train_ridge(features_df, target_col)
-        
-        # 训练Lasso回归
-        print("训练Lasso回归模型...")
-        self.train_lasso(features_df, target_col)
-        
-        # 训练SVR
-        print("训练支持向量回归模型...")
-        self.train_svr(features_df, target_col)
-        
+        for model_name in self.supported_algorithms:
+            match model_name:
+                case "lightgbm":
+                    # 训练LightGBM
+                    print("训练LightGBM模型...")
+                    self.train_lightgbm(features_df, target_col)
+                case "xgboost":
+                    # 训练XGBoost
+                    print("训练XGBoost模型...")
+                    self.train_xgboost(features_df, target_col)
+                case "random_forest":
+                    # 训练随机森林
+                    print("训练随机森林模型...")
+                    self.train_random_forest(features_df, target_col)
+                case "gradient_boosting":
+                    # 训练梯度提升
+                    print("训练梯度提升模型...")
+                    self.train_gradient_boosting(features_df, target_col)
+                case "linear_regression":
+                    # 训练线性回归
+                    print("训练线性回归模型...")
+                    self.train_linear_regression(features_df, target_col)
+                case "ridge":
+                    # 训练岭回归
+                    print("训练岭回归模型...")
+                    self.train_ridge(features_df, target_col)
+                case "lasso":
+                    # 训练Lasso回归
+                    print("训练Lasso回归模型...")
+                    self.train_lasso(features_df, target_col)
+                case "svr":
+                    # 训练SVR
+                    print("训练支持向量回归模型...")
+                    self.train_svr(features_df, target_col)
+
         print("所有模型训练完成!")
         return self.models
     
@@ -471,7 +523,7 @@ class SalesPredictor:
         categorical_features = self._get_categorical_features(features_df)
         
         feature_columns = [col for col in numeric_features + categorical_features 
-                          if col not in ['商品编码', '商品名称', '日期', '销售数量']]
+                          if col not in ['商品编码', '商品名称', '日期', '销售数量', '门店编码', '销售金额']]
         
         X = features_df[feature_columns].copy()
         
@@ -497,16 +549,16 @@ class SalesPredictor:
         X = X.fillna(0)
         
         # 限制数值范围
-        for col in X.select_dtypes(include=[np.number]).columns:
-            # 使用训练时的范围，这里暂时使用数据的分位数
-            max_val = X[col].quantile(0.99)
-            min_val = X[col].quantile(0.01)
-            X[col] = X[col].clip(min_val, max_val)
-        
-        # 标准化
-        X_scaled = self.scalers['standard_scaler'].transform(X)
-        X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
-        
+        # for col in X.select_dtypes(include=[np.number]).columns:
+        #     # 使用训练时的范围，这里暂时使用数据的分位数
+        #     max_val = X[col].quantile(0.99)
+        #     min_val = X[col].quantile(0.01)
+        #     X[col] = X[col].clip(min_val, max_val)
+        #
+        # # 标准化
+        # X_scaled = self.scalers['standard_scaler'].transform(X)
+        # X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+        X_scaled = X.copy()
         # 预测
         predictions = model.predict(X_scaled)
         
