@@ -13,9 +13,9 @@ def parse_time_string(time_str: str) -> time:
             return datetime.strptime(time_str, "%H:%M:%S").time()
         except:
             return time(0, 0)
-def time_to_30min_slot(dt_series):
+def time_to_custom_min_slot(dt_series, gap: int = 60):
     """
-    将时间转换为30分钟时段的整数编码（1-48）
+    将时间转换为gap分钟时段的整数编码（1-48）
     00:00-00:30 -> 1
     00:30-01:00 -> 2
     ...
@@ -25,11 +25,11 @@ def time_to_30min_slot(dt_series):
     total_minutes = dt_series.dt.hour * 60 + dt_series.dt.minute
     
     # 按30分钟取整（向下取整）
-    slot = total_minutes // 30 + 1
+    slot = total_minutes // gap + 1
     return slot
-def str_time_to_30min_slot(promotion_time: str = "18:00"):
+def str_time_to_custom_min_slot(promotion_time: str = "18:00", gap: int = 60):
         """
-        将时间转换为30分钟时段的整数编码（1-48）
+        将时间转换为gap分钟时段的整数编码（1-48）
         00:00-00:30 -> 1
         00:30-01:00 -> 2
         ...
@@ -39,7 +39,7 @@ def str_time_to_30min_slot(promotion_time: str = "18:00"):
         start_hour, start_minute = map(int, promotion_time.split(':'))
         total_minutes = start_hour * 60 + start_minute
         # 按30分钟取整（向下取整）
-        slot = total_minutes // 30 + 1
+        slot = total_minutes // gap + 1
         return slot
 
 def format_time_string(time_obj: time) -> str:

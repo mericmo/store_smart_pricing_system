@@ -15,7 +15,11 @@ import seaborn as sns
 from typing import Dict, List, Tuple, Optional, Union, Any
 import joblib
 import os
+from utils.common import save_to_csv
+from models import ModelOptimizer
+
 warnings.filterwarnings('ignore')
+
 
 class SalesPredictor:
     """
@@ -23,7 +27,7 @@ class SalesPredictor:
     从FeatureStore获取特征进行模型训练和预测
     支持多种算法和全面的模型评估
     """
-    
+
     def __init__(self, forecast_horizon=7, model_dir="models"):
         """
         初始化销售预测器
@@ -40,19 +44,35 @@ class SalesPredictor:
         self.feature_columns = {}
         self.scalers = {}
         self.scalers_columns = [
-            "年份", '日期序号','时间窗口','温度','最高温度','最低温度','温度差',
+            "年份", '日期序号', '时间窗口', '温度', '最高温度', '最低温度', '温度差',
         ]
+        # 删除数值全部相同的列
+        self.can_drop_cols = ['年份', '季度', '季节', '降雨量', '天气严重程度', '是否恶劣天气', '温度等级',
+                              '温度差等级', '节假日类型']
         self.label_encoders = {}
-        
+
+        # 添加优化器实例
+        self.optimizer = ModelOptimizer(self)
+
         # 确保模型目录存在
         os.makedirs(model_dir, exist_ok=True)
-        
+
         # 支持的算法列表
         self.supported_algorithms = [
-            'lightgbm', 'xgboost', 'random_forest', 
-            'gradient_boosting', 'linear_regression', 
-            #'ridge', 'lasso', 'svr'
+            'lightgbm', 'xgboost', 'random_forest',
+            'gradient_boosting', 'linear_regression',
+            # 'ridge', 'lasso', 'svr'
         ]
+        # 保存多模型训练特征信息 X_train, X_test, y_train, y_test
+        self.train_data = {
+            "is_ready": False,  # 训练数据是否已就绪
+            "features_df": None,  # 全量数据
+            "X_train": None,
+            "X_test": None,
+            "y_train": None,
+            "y_test": None,
+        }
+
     def excute_category_features(self, features_df, target_col):
         # 选择数值型特征和分类特征
         numeric_features = self._get_numeric_features(features_df)
@@ -60,24 +80,34 @@ class SalesPredictor:
 
         # 移除目标变量和标识列
         feature_columns = [col for col in numeric_features + categorical_features
-                           if col not in ['门店编码', '商品编码', '商品名称', '日期', '销售金额',
+                           if col not in ['门店编码', '商品编码', '商品名称', '日期', '销售金额', '折扣金额',
                                           target_col]]  # 需要去掉销售金额，因为单价*数量=销售金额，知道其中两个因子就可以求出第三个因子
 
         # 准备数据
         X = features_df[feature_columns].copy()
+        # 对确定的数据列做数据矫正
+        columns_to_round = ['销售金额', '售价', '折扣金额', '平均售价', '实际折扣率']
+        columns_to_round = [col for col in columns_to_round if col in feature_columns]
+        X[columns_to_round] = X[columns_to_round].round(2)
 
+        # feature_columns = [col for col in feature_columns if col not in cols_to_drop]
+        # feature_columns = X.columns
+        X = self.encode_categorical_features(X, categorical_features)
+        save_to_csv(X)
+        return X, feature_columns, numeric_features, categorical_features
+    def encode_categorical_features(self,df,categorical_features):
         # 处理分类特征 - 对每个分类特征进行编码
         for col in categorical_features:
-            if col in X.columns:
+            if col in df.columns:
+                # 处理可能的未知值
                 if col not in self.label_encoders:
                     self.label_encoders[col] = LabelEncoder()
                     # 处理可能的未知值
-                    X[col] = X[col].astype(str)
-                    self.label_encoders[col].fit(X[col])
+                    df[col] = df[col].astype(str)
+                    self.label_encoders[col].fit(df[col])
+                df[col] = self.label_encoders[col].transform(df[col])
 
-                X[col] = self.label_encoders[col].transform(X[col])
-        return X, feature_columns, numeric_features, categorical_features
-
+        return df
     def standard_scaler_features(self, features_df):
         # 限制数值范围，避免过大值
         X = features_df.copy()
@@ -95,9 +125,8 @@ class SalesPredictor:
         else:
             X_scaled = self.scalers['standard_scaler'].transform(X)
             X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
-
+        save_to_csv(X_scaled)
         return X_scaled
-
 
     def prepare_features_for_training(self, features_df, target_col='销售数量', test_size=0.2, random_state=42):
         """
@@ -112,7 +141,8 @@ class SalesPredictor:
         返回:
         - X_train, X_test, y_train, y_test, feature_columns
         """
-        X, feature_columns, numeric_features, categorical_features = self.excute_category_features(features_df, target_col)
+        X, feature_columns, numeric_features, categorical_features = self.excute_category_features(features_df,
+                                                                                                   target_col)
         # 选择数值型特征和分类特征
         # numeric_features = self._get_numeric_features(features_df)
         # categorical_features = self._get_categorical_features(features_df)
@@ -124,7 +154,7 @@ class SalesPredictor:
         # # 准备数据
         # X = features_df[feature_columns].copy()
         y = features_df[target_col]
-        
+
         # 处理分类特征 - 对每个分类特征进行编码
         # for col in categorical_features:
         #     if col in X.columns:
@@ -135,15 +165,15 @@ class SalesPredictor:
         #             self.label_encoders[col].fit(X[col])
         #
         #         X[col] = self.label_encoders[col].transform(X[col])
-        
+
         # 处理无穷大值和过大的值
         X = X.replace([np.inf, -np.inf], np.nan)
         y = y.replace([np.inf, -np.inf], np.nan)
-        
+
         # 填充NaN值
         X = X.fillna(0)
         y = y.fillna(0)
-        
+
         # 限制数值范围，避免过大值
         # for col in X.select_dtypes(include=[np.number]).columns:
         #     max_val = X[col].quantile(0.99)
@@ -164,7 +194,7 @@ class SalesPredictor:
         # # 添加日期索引用于排序
         if '日期' in features_df.columns:
             # 按日期排序整个数据集
-            sorted_indices = features_df['日期'].sort_values().index
+            sorted_indices = features_df.sort_values(['日期', '时间窗口']).index
             X_scaled = X_scaled.loc[sorted_indices]
             y = y.loc[sorted_indices]
 
@@ -174,42 +204,59 @@ class SalesPredictor:
         X_test = X_scaled.iloc[split_index:]
         y_train = y.iloc[:split_index]
         y_test = y.iloc[split_index:]
-        
+
         # 保存特征列信息
         self.feature_columns['all'] = feature_columns
         self.feature_columns['numeric'] = numeric_features
         self.feature_columns['categorical'] = categorical_features
-        # X_train.to_csv
-        # return X_train, X_test, y_train, y_test, feature_columns
 
-        return X, X_test, y, y_test, feature_columns
+        self.train_data['is_ready'] = True
+        self.train_data['X_train'] = X_train
+        self.train_data['X_test'] = X_test
+        self.train_data['y_train'] = y_train
+        self.train_data['y_test'] = y_test
+        self.train_data['features_df'] = features_df
+        save_to_csv(X)
+        return X_train, X_test, y_train, y_test, feature_columns
 
-    
+    def _get_features_for_training(self, features_df, target_col='销售数量'):
+        train_data = self.train_data
+        is_ready = train_data['is_ready']
+        if is_ready:
+            return train_data['X_train'], train_data['X_test'], train_data[
+                'y_train'], train_data['y_test'], self.feature_columns.get('all')
+            # X_train, X_test, y_train, y_test, feature_columns = train_data['X_train'], train_data['X_test'], train_data['y_train'], train_data['y_test'], self.feature_columns.get('all')
+        else:
+            return self.prepare_features_for_training(features_df, target_col=target_col)
+    # def train_validation_set(self,x_feature, y, model_name):
+    #     model = lgb.train()
+    #     return model
     def train_lightgbm(self, features_df, target_col='销售数量', params=None):
         """
         训练LightGBM模型
         """
         if params is None:
-            params = {
-                'objective': 'regression',
-                'metric': 'rmse',
-                'num_leaves': 31,
-                'learning_rate': 0.05,
-                'feature_fraction': 0.9,
-                'bagging_fraction': 0.8,
-                'bagging_freq': 5,
-                'verbose': -1
-            }
-        
+            # params = {
+            #     'objective': 'regression',
+            #     'metric': 'rmse',
+            #     'num_leaves': 31,
+            #     'learning_rate': 0.05,
+            #     'feature_fraction': 0.9,
+            #     'bagging_fraction': 0.8,
+            #     'bagging_freq': 5,
+            #     'verbose': -1
+            # }
+            params = {'objective': 'regression','metric': 'rmse','verbose': -1, 'num_leaves': 50, 'learning_rate': 0.1, 'feature_fraction': 0.9305284147723099, 'bagging_fraction': 0.6512076296895168, 'bagging_freq': 5, 'min_child_samples': 10, 'reg_alpha': 0.0016702423575167592, 'reg_lambda': 0.014332007201600681, 'max_depth': 28, 'min_split_gain': 0.028100354739988065, 'subsample': 0.6925008534562135, 'colsample_bytree': 0.7627198437987256, 'num_boost_round': 1912}
         # 准备特征
-        X_train, X_test, y_train, y_test, feature_columns = self.prepare_features_for_training(
+        X_train, X_test, y_train, y_test, feature_columns = self._get_features_for_training(
             features_df, target_col
         )
-        X_train.to_csv('X_train.csv',encoding='utf-8')
+
+        save_to_csv(X_train)
         # 创建数据集
         train_data = lgb.Dataset(X_train, label=y_train, categorical_feature='auto')
         test_data = lgb.Dataset(X_test, label=y_test, reference=train_data)
-        
+
         # 训练模型
         model = lgb.train(
             params,
@@ -218,19 +265,19 @@ class SalesPredictor:
             valid_sets=[train_data, test_data],
             callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
         )
-        
+
         # 保存模型和特征重要性
         self.models['lightgbm'] = model
         self.feature_importance['lightgbm'] = dict(zip(
             feature_columns, model.feature_importance()
         ))
-        
+
         # 评估模型
         predictions = model.predict(X_test)
         self.evaluation_results['lightgbm'] = self._evaluate_model(y_test, predictions)
-        
+
         return model
-    
+
     def train_xgboost(self, features_df, target_col='销售数量', params=None):
         """
         训练XGBoost模型
@@ -242,9 +289,9 @@ class SalesPredictor:
                 'objective': 'reg:squarederror',
                 'eval_metric': 'rmse'
             }
-        
+
         # 准备特征
-        X_train, X_test, y_train, y_test, feature_columns = self.prepare_features_for_training(
+        X_train, X_test, y_train, y_test, feature_columns = self._get_features_for_training(
             features_df, target_col
         )
         # X_train.to_csv("X.csv", encodings='utf-8')
@@ -255,19 +302,19 @@ class SalesPredictor:
             eval_set=[(X_test, y_test)],
             verbose=False
         )
-        
+
         # 保存模型和特征重要性
         self.models['xgboost'] = model
         self.feature_importance['xgboost'] = dict(zip(
             feature_columns, model.feature_importances_
         ))
-        
+
         # 评估模型
         predictions = model.predict(X_test)
         self.evaluation_results['xgboost'] = self._evaluate_model(y_test, predictions)
-        
+
         return model
-    
+
     def train_random_forest(self, features_df, target_col='销售数量', params=None):
         """
         训练随机森林模型
@@ -281,28 +328,28 @@ class SalesPredictor:
                 'random_state': 42,
                 'n_jobs': -1
             }
-        
+
         # 准备特征
-        X_train, X_test, y_train, y_test, feature_columns = self.prepare_features_for_training(
+        X_train, X_test, y_train, y_test, feature_columns = self._get_features_for_training(
             features_df, target_col
         )
-        
+
         # 训练模型 - 移除不支持的参数
         model = RandomForestRegressor(**params)
         model.fit(X_train, y_train)
-        
+
         # 保存模型和特征重要性
         self.models['random_forest'] = model
         self.feature_importance['random_forest'] = dict(zip(
             feature_columns, model.feature_importances_
         ))
-        
+
         # 评估模型
         predictions = model.predict(X_test)
         self.evaluation_results['random_forest'] = self._evaluate_model(y_test, predictions)
-        
+
         return model
-    
+
     def train_gradient_boosting(self, features_df, target_col='销售数量', params=None):
         """
         训练梯度提升模型
@@ -314,112 +361,112 @@ class SalesPredictor:
                 'max_depth': 6,
                 'random_state': 42
             }
-        
+
         # 准备特征
-        X_train, X_test, y_train, y_test, feature_columns = self.prepare_features_for_training(
+        X_train, X_test, y_train, y_test, feature_columns = self._get_features_for_training(
             features_df, target_col
         )
-        
+
         # 训练模型
         model = GradientBoostingRegressor(**params)
         model.fit(X_train, y_train)
-        
+
         # 保存模型和特征重要性
         self.models['gradient_boosting'] = model
         self.feature_importance['gradient_boosting'] = dict(zip(
             feature_columns, model.feature_importances_
         ))
-        
+
         # 评估模型
         predictions = model.predict(X_test)
         self.evaluation_results['gradient_boosting'] = self._evaluate_model(y_test, predictions)
-        
+
         return model
-    
+
     def train_linear_regression(self, features_df, target_col='销售数量'):
         """
         训练线性回归模型
         """
         # 准备特征
-        X_train, X_test, y_train, y_test, feature_columns = self.prepare_features_for_training(
+        X_train, X_test, y_train, y_test, feature_columns = self._get_features_for_training(
             features_df, target_col
         )
-        
+
         # 训练模型
         model = LinearRegression()
         model.fit(X_train, y_train)
-        
+
         # 保存模型和特征重要性
         self.models['linear_regression'] = model
         # 线性回归的特征重要性是系数的绝对值
         self.feature_importance['linear_regression'] = dict(zip(
             feature_columns, np.abs(model.coef_)
         ))
-        
+
         # 评估模型
         predictions = model.predict(X_test)
         self.evaluation_results['linear_regression'] = self._evaluate_model(y_test, predictions)
-        
+
         return model
-    
+
     def train_ridge(self, features_df, target_col='销售数量', params=None):
         """
         训练岭回归模型
         """
         if params is None:
             params = {'alpha': 1.0, 'random_state': 42}
-        
+
         # 准备特征
-        X_train, X_test, y_train, y_test, feature_columns = self.prepare_features_for_training(
+        X_train, X_test, y_train, y_test, feature_columns = self._get_features_for_training(
             features_df, target_col
         )
-        
+
         # 训练模型
         model = Ridge(**params)
         model.fit(X_train, y_train)
-        
+
         # 保存模型和特征重要性
         self.models['ridge'] = model
         # 岭回归的特征重要性是系数的绝对值
         self.feature_importance['ridge'] = dict(zip(
             feature_columns, np.abs(model.coef_)
         ))
-        
+
         # 评估模型
         predictions = model.predict(X_test)
         self.evaluation_results['ridge'] = self._evaluate_model(y_test, predictions)
-        
+
         return model
-    
+
     def train_lasso(self, features_df, target_col='销售数量', params=None):
         """
         训练Lasso回归模型
         """
         if params is None:
             params = {'alpha': 1.0, 'random_state': 42}
-        
+
         # 准备特征
-        X_train, X_test, y_train, y_test, feature_columns = self.prepare_features_for_training(
+        X_train, X_test, y_train, y_test, feature_columns = self._get_features_for_training(
             features_df, target_col
         )
-        
+
         # 训练模型
         model = Lasso(**params)
         model.fit(X_train, y_train)
-        
+
         # 保存模型和特征重要性
         self.models['lasso'] = model
         # Lasso回归的特征重要性是系数的绝对值
         self.feature_importance['lasso'] = dict(zip(
             feature_columns, np.abs(model.coef_)
         ))
-        
+
         # 评估模型
         predictions = model.predict(X_test)
         self.evaluation_results['lasso'] = self._evaluate_model(y_test, predictions)
-        
+
         return model
-    
+
     def train_svr(self, features_df, target_col='销售数量', params=None):
         """
         训练支持向量回归模型
@@ -431,27 +478,27 @@ class SalesPredictor:
                 'gamma': 'scale',
                 'epsilon': 0.1
             }
-        
+
         # 准备特征
-        X_train, X_test, y_train, y_test, feature_columns = self.prepare_features_for_training(
+        X_train, X_test, y_train, y_test, feature_columns = self._get_features_for_training(
             features_df, target_col
         )
-        
+
         # 训练模型
         model = SVR(**params)
         model.fit(X_train, y_train)
-        
+
         # 保存模型
         self.models['svr'] = model
         # SVR没有直接的特征重要性
         self.feature_importance['svr'] = {}
-        
+
         # 评估模型
         predictions = model.predict(X_test)
         self.evaluation_results['svr'] = self._evaluate_model(y_test, predictions)
-        
+
         return model
-    
+
     def train_all_models(self, features_df, target_col='销售数量'):
         """
         训练所有支持的模型
@@ -463,45 +510,47 @@ class SalesPredictor:
         返回:
         - 所有训练好的模型字典
         """
+
         print("开始训练所有模型...")
         for model_name in self.supported_algorithms:
-            match model_name:
-                case "lightgbm":
-                    # 训练LightGBM
-                    print("训练LightGBM模型...")
-                    self.train_lightgbm(features_df, target_col)
-                case "xgboost":
-                    # 训练XGBoost
-                    print("训练XGBoost模型...")
-                    self.train_xgboost(features_df, target_col)
-                case "random_forest":
-                    # 训练随机森林
-                    print("训练随机森林模型...")
-                    self.train_random_forest(features_df, target_col)
-                case "gradient_boosting":
-                    # 训练梯度提升
-                    print("训练梯度提升模型...")
-                    self.train_gradient_boosting(features_df, target_col)
-                case "linear_regression":
-                    # 训练线性回归
-                    print("训练线性回归模型...")
-                    self.train_linear_regression(features_df, target_col)
-                case "ridge":
-                    # 训练岭回归
-                    print("训练岭回归模型...")
-                    self.train_ridge(features_df, target_col)
-                case "lasso":
-                    # 训练Lasso回归
-                    print("训练Lasso回归模型...")
-                    self.train_lasso(features_df, target_col)
-                case "svr":
-                    # 训练SVR
-                    print("训练支持向量回归模型...")
-                    self.train_svr(features_df, target_col)
+            self.train_with_optimized_params(features_df,target_col,model_name)
+            # match model_name:
+            #     case "lightgbm":
+            #         # 训练LightGBM
+            #         print("训练LightGBM模型...")
+            #         self.train_lightgbm(features_df, target_col)
+            #     case "xgboost":
+            #         # 训练XGBoost
+            #         print("训练XGBoost模型...")
+            #         self.train_xgboost(features_df, target_col)
+            #     case "random_forest":
+            #         # 训练随机森林
+            #         print("训练随机森林模型...")
+            #         self.train_random_forest(features_df, target_col)
+            #     case "gradient_boosting":
+            #         # 训练梯度提升
+            #         print("训练梯度提升模型...")
+            #         self.train_gradient_boosting(features_df, target_col)
+            #     case "linear_regression":
+            #         # 训练线性回归
+            #         print("训练线性回归模型...")
+            #         self.train_linear_regression(features_df, target_col)
+            #     case "ridge":
+            #         # 训练岭回归
+            #         print("训练岭回归模型...")
+            #         self.train_ridge(features_df, target_col)
+            #     case "lasso":
+            #         # 训练Lasso回归
+            #         print("训练Lasso回归模型...")
+            #         self.train_lasso(features_df, target_col)
+            #     case "svr":
+            #         # 训练SVR
+            #         print("训练支持向量回归模型...")
+            #         self.train_svr(features_df, target_col)
 
         print("所有模型训练完成!")
         return self.models
-    
+
     def predict(self, features_df, model_name='lightgbm'):
         """
         使用训练好的模型进行预测
@@ -515,39 +564,40 @@ class SalesPredictor:
         """
         if model_name not in self.models:
             raise ValueError(f"模型 {model_name} 尚未训练")
-        
+
         model = self.models[model_name]
-        
+
         # 准备特征（与训练时相同的处理）
         numeric_features = self._get_numeric_features(features_df)
         categorical_features = self._get_categorical_features(features_df)
-        
-        feature_columns = [col for col in numeric_features + categorical_features 
-                          if col not in ['商品编码', '商品名称', '日期', '销售数量', '门店编码', '销售金额']]
-        
+
+        feature_columns = [col for col in numeric_features + categorical_features
+                           if
+                           col not in ['门店编码', '商品编码', '商品名称', '日期', '销售数量', '销售金额', '折扣金额']]
+
         X = features_df[feature_columns].copy()
-        
-        # 处理分类特征
-        for col in categorical_features:
-            if col in X.columns:
-                # 处理可能的未知值
-                X[col] = X[col].astype(str)
-                # 如果遇到训练时未见过的类别，映射为未知类别
-                unique_vals = set(self.label_encoders[col].classes_)
-                X[col] = X[col].apply(lambda x: x if x in unique_vals else 'unknown')
-                
-                # 如果未知类别不在编码器中，添加它
-                if 'unknown' not in self.label_encoders[col].classes_:
-                    self.label_encoders[col].classes_ = np.append(
-                        self.label_encoders[col].classes_, 'unknown'
-                    )
-                
-                X[col] = self.label_encoders[col].transform(X[col])
-        
+
+        # # 处理分类特征
+        # for col in categorical_features:
+        #     if col in X.columns:
+        #         # 处理可能的未知值
+        #         X[col] = X[col].astype(str)
+        #         # 如果遇到训练时未见过的类别，映射为未知类别
+        #         unique_vals = set(self.label_encoders[col].classes_)
+        #         X[col] = X[col].apply(lambda x: x if x in unique_vals else 'unknown')
+        #
+        #         # 如果未知类别不在编码器中，添加它
+        #         if 'unknown' not in self.label_encoders[col].classes_:
+        #             self.label_encoders[col].classes_ = np.append(
+        #                 self.label_encoders[col].classes_, 'unknown'
+        #             )
+        #
+        #         X[col] = self.label_encoders[col].transform(X[col])
+        X = self.encode_categorical_features(X, categorical_features)
         # 处理无穷大值和过大的值
         X = X.replace([np.inf, -np.inf], np.nan)
         X = X.fillna(0)
-        
+
         # 限制数值范围
         # for col in X.select_dtypes(include=[np.number]).columns:
         #     # 使用训练时的范围，这里暂时使用数据的分位数
@@ -561,35 +611,42 @@ class SalesPredictor:
         X_scaled = X.copy()
         # 预测
         predictions = model.predict(X_scaled)
-        
+
         # 创建结果DataFrame
-        result_df = features_df[['商品编码', '日期']].copy() #'商品名称',
+        result_df = features_df[['商品编码', '日期']].copy()  # '商品名称',
         result_df['预测销量'] = predictions
         if '销售数量' in features_df.columns:
             result_df['实际销量'] = features_df['销售数量']
-        
+
         return result_df
-    
+
     def _get_numeric_features(self, df):
         """获取数值型特征"""
+        nf = self.feature_columns.get("numeric_cols")
+        if nf and len(nf):
+            return nf
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+
         return [col for col in numeric_cols if col not in ['商品编码']]
-    
+
     def _get_categorical_features(self, df):
         """获取分类特征"""
+        cf = self.feature_columns.get("categorical_cols")
+        if cf and len(cf):
+            return cf
         categorical_cols = df.select_dtypes(include=['category', 'object']).columns.tolist()
-        return [col for col in categorical_cols if col not in ['商品名称', '日期']]
-    
+        return [col for col in categorical_cols if col not in ['商品名称', '日期']]#'门店编码', '商品编码',
+
     def _evaluate_model(self, y_true, y_pred):
         """评估模型性能"""
         mse = mean_squared_error(y_true, y_pred)
         mae = mean_absolute_error(y_true, y_pred)
         rmse = np.sqrt(mse)
         r2 = r2_score(y_true, y_pred)
-        
+
         # 计算MAPE (平均绝对百分比误差)
         mape = np.mean(np.abs((y_true - y_pred) / np.where(y_true != 0, y_true, 1))) * 100
-        
+
         return {
             'MSE': mse,
             'MAE': mae,
@@ -597,7 +654,7 @@ class SalesPredictor:
             'R2': r2,
             'MAPE': mape
         }
-    
+
     def get_feature_importance(self, model_name='lightgbm', top_n=10):
         """
         获取特征重要性
@@ -611,15 +668,15 @@ class SalesPredictor:
         """
         if model_name not in self.feature_importance:
             return None
-        
+
         importance_dict = self.feature_importance[model_name]
         if not importance_dict:
             return None
-        
+
         sorted_importance = sorted(importance_dict.items(), key=lambda x: x[1], reverse=True)
-        
+
         return dict(sorted_importance[:top_n])
-    
+
     def get_evaluation_results(self, model_name='lightgbm'):
         """
         获取评估结果
@@ -631,7 +688,7 @@ class SalesPredictor:
         - 评估结果字典
         """
         return self.evaluation_results.get(model_name)
-    
+
     def compare_models(self, metric='RMSE'):
         """
         比较所有训练过的模型
@@ -646,16 +703,16 @@ class SalesPredictor:
         for model_name in self.models.keys():
             if model_name in self.evaluation_results:
                 comparison[model_name] = self.evaluation_results[model_name]
-        
+
         # 转换为DataFrame
         comparison_df = pd.DataFrame.from_dict(comparison, orient='index')
-        
+
         # 按指定指标排序
         if metric in comparison_df.columns:
             comparison_df = comparison_df.sort_values(by=metric)
-        
+
         return comparison_df
-    
+
     def plot_model_comparison(self, metric='RMSE', figsize=(10, 6)):
         """
         绘制模型比较图
@@ -665,7 +722,7 @@ class SalesPredictor:
         - figsize: 图形大小
         """
         comparison_df = self.compare_models(metric)
-        
+
         plt.figure(figsize=figsize)
         sns.barplot(x=comparison_df.index, y=comparison_df[metric])
         plt.title(f'模型比较 - {metric}')
@@ -674,7 +731,7 @@ class SalesPredictor:
         plt.xticks(rotation=45)
         plt.tight_layout()
         plt.show()
-    
+
     def plot_feature_importance(self, model_name='lightgbm', top_n=10, figsize=(10, 6)):
         """
         绘制特征重要性图
@@ -685,22 +742,22 @@ class SalesPredictor:
         - figsize: 图形大小
         """
         importance = self.get_feature_importance(model_name, top_n)
-        
+
         if importance is None:
             print(f"模型 {model_name} 没有特征重要性信息")
             return
-        
+
         plt.figure(figsize=figsize)
         features = list(importance.keys())
         values = list(importance.values())
-        
+
         sns.barplot(x=values, y=features)
         plt.title(f'特征重要性 - {model_name}')
         plt.xlabel('重要性')
         plt.ylabel('特征')
         plt.tight_layout()
         plt.show()
-    
+
     def save_model(self, model_name, filepath=None):
         """
         保存模型
@@ -711,10 +768,10 @@ class SalesPredictor:
         """
         if model_name not in self.models:
             raise ValueError(f"模型 {model_name} 尚未训练")
-        
+
         if filepath is None:
             filepath = os.path.join(self.model_dir, f"{model_name}.pkl")
-        
+
         model_data = {
             'model': self.models[model_name],
             'feature_importance': self.feature_importance.get(model_name, {}),
@@ -723,10 +780,10 @@ class SalesPredictor:
             'scalers': self.scalers,
             'label_encoders': self.label_encoders
         }
-        
+
         joblib.dump(model_data, filepath)
         print(f"模型 {model_name} 已保存到 {filepath}")
-    
+
     def load_model(self, model_name, filepath=None):
         """
         加载模型
@@ -737,17 +794,165 @@ class SalesPredictor:
         """
         if filepath is None:
             filepath = os.path.join(self.model_dir, f"{model_name}.pkl")
-        
+
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"模型文件 {filepath} 不存在")
-        
+
         model_data = joblib.load(filepath)
-        
+
         self.models[model_name] = model_data['model']
         self.feature_importance[model_name] = model_data.get('feature_importance', {})
         self.evaluation_results[model_name] = model_data.get('evaluation_results', {})
         self.feature_columns = model_data.get('feature_columns', {})
         self.scalers = model_data.get('scalers', {})
         self.label_encoders = model_data.get('label_encoders', {})
-        
+
         print(f"模型 {model_name} 已从 {filepath} 加载")
+
+    def optimize_model_params(self, features_df, target_col='销售数量',
+                              model_name='all', n_trials=50, cv_folds=5,
+                              random_state=42):
+        """
+        优化模型参数
+
+        Args:
+            features_df: 特征数据
+            target_col: 目标列名
+            model_name: 要优化的模型名称，'all'表示优化所有模型
+            n_trials: 每个模型的试验次数
+            cv_folds: 交叉验证折数
+            random_state: 随机种子
+
+        Returns:
+            优化后的参数
+        """
+        if model_name == 'all':
+            return self.optimizer.optimize_all_models(
+                features_df, target_col, n_trials, cv_folds, random_state
+            )
+        elif model_name == 'lightgbm':
+            return self.optimizer.optimize_lightgbm(
+                features_df, target_col, n_trials, cv_folds, random_state
+            )
+        elif model_name == 'xgboost':
+            return self.optimizer.optimize_xgboost(
+                features_df, target_col, n_trials, cv_folds, random_state
+            )
+        elif model_name == 'random_forest':
+            return self.optimizer.optimize_random_forest(
+                features_df, target_col, n_trials, cv_folds, random_state
+            )
+        elif model_name == 'gradient_boosting':
+            return self.optimizer.optimize_gradient_boosting(
+                features_df, target_col, n_trials, cv_folds, random_state
+            )
+        elif model_name == 'linear_regression':
+            return self.optimizer.optimize_linear_regression(
+                features_df, target_col, n_trials, cv_folds, random_state
+            )
+        elif model_name == 'ridge':
+            return self.optimizer.optimize_ridge(
+                features_df, target_col, n_trials, cv_folds, random_state
+            )
+        elif model_name == 'lasso':
+            return self.optimizer.optimize_lasso(
+                features_df, target_col, n_trials, cv_folds, random_state
+            )
+        elif model_name == 'svr':
+            return self.optimizer.optimize_svr(
+                features_df, target_col, n_trials, cv_folds, random_state
+            )
+        else:
+            raise ValueError(f"不支持的模型: {model_name}")
+
+    def get_best_params(self, model_name):
+        """
+        获取优化后的最佳参数
+
+        Args:
+            model_name: 模型名称
+
+        Returns:
+            最佳参数
+        """
+        return self.optimizer.best_params.get(model_name)
+
+    def train_with_optimized_params(self, features_df, target_col='销售数量',
+                                    model_name='lightgbm'):
+        """
+        使用优化后的参数训练模型
+
+        Args:
+            features_df: 特征数据
+            target_col: 目标列名
+            model_name: 模型名称
+
+        Returns:
+            训练好的模型
+        """
+        best_params = self.get_best_params(model_name)
+
+        if not best_params:
+            print(f"模型 {model_name} 没有优化后的参数，使用默认参数训练")
+            best_params = None
+
+        # 使用最佳参数训练模型
+        if model_name == 'lightgbm':
+            return self.train_lightgbm(features_df, target_col, best_params)
+        elif model_name == 'xgboost':
+            return self.train_xgboost(features_df, target_col, best_params)
+        elif model_name == 'random_forest':
+            return self.train_random_forest(features_df, target_col, best_params)
+        elif model_name == 'gradient_boosting':
+            return self.train_gradient_boosting(features_df, target_col, best_params)
+        elif model_name == 'linear_regression':
+            # 线性回归的参数需要特殊处理
+            if best_params:
+                return self.train_linear_regression(features_df, target_col)
+            else:
+                return self.train_linear_regression(features_df, target_col)
+        elif model_name == 'ridge':
+            return self.train_ridge(features_df, target_col, best_params)
+        elif model_name == 'lasso':
+            return self.train_lasso(features_df, target_col, best_params)
+        elif model_name == 'svr':
+            return self.train_svr(features_df, target_col, best_params)
+        else:
+            raise ValueError(f"不支持的模型: {model_name}")
+
+    def save_optimization_results(self, filepath=None):
+        """
+        保存优化结果
+
+        Args:
+            filepath: 保存路径，如果为None则使用默认路径
+        """
+        if filepath is None:
+            filepath = os.path.join(self.model_dir, "optimization_results.pkl")
+
+        optimization_data = {
+            'best_params': self.optimizer.best_params,
+            'optimization_results': self.optimizer.optimization_results
+        }
+
+        joblib.dump(optimization_data, filepath)
+        print(f"优化结果已保存到 {filepath}")
+
+    def load_optimization_results(self, filepath=None):
+        """
+        加载优化结果
+
+        Args:
+            filepath: 模型文件路径，如果为None则使用默认路径
+        """
+        if filepath is None:
+            filepath = os.path.join(self.model_dir, "optimization_results.pkl")
+
+        if not os.path.exists(filepath):
+            print(f"优化结果文件 {filepath} 不存在")
+            return
+
+        optimization_data = joblib.load(filepath)
+        self.optimizer.best_params = optimization_data.get('best_params', {})
+        self.optimizer.optimization_results = optimization_data.get('optimization_results', {})
+        print(f"优化结果已从 {filepath} 加载")

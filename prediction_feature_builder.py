@@ -4,6 +4,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Union, Any
 import warnings
+from utils.common import save_to_csv
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 warnings.filterwarnings('ignore')
 
@@ -36,7 +37,7 @@ class PredictionFeatureBuilder:
         self.data_preprocessor = data_preprocessor
         self.sales_predictor = sales_predictor
         self.historical_sales_data = historical_sales_data
-        historical_sales_data.to_csv('historical_sales_data.csv', encoding='utf-8')
+        save_to_csv(historical_sales_data)
         self.last_transaction_data = historical_sales_data.iloc[-1]
         self.calendar_data = calendar_data
         self.weather_data = weather_data
@@ -70,7 +71,7 @@ class PredictionFeatureBuilder:
 
         # 2. 确定需要预测的时间窗口
         if target_time_windows is None:
-            target_time_windows = list(range(36, 44))  # 1-48
+            raise ValueError("缺乏时间段信息")
 
         # 3. 构建基础数据框架
         features_df = self._create_base_prediction_frame(
@@ -82,7 +83,7 @@ class PredictionFeatureBuilder:
 
         # 5. 应用特征工程管道
         # features_df = self._apply_feature_engineering_pipeline(features_df)
-
+        save_to_csv(features_df)
         return features_df
 
     def _create_base_prediction_frame(self,
@@ -108,10 +109,10 @@ class PredictionFeatureBuilder:
                 record["时间窗口"] = time_window
                 record["销售数量"] = 0
                 record["平均售价"] = record["售价"]*dis
-                record["销售金额"] = 0
+                # record["销售金额"] = 0
                 record["实际折扣率"] = dis
                 record["是否促销"] = 1  # 默认促销
-                record["预测标志"] = 1  # 标记为预测数据
+                # record["预测标志"] = 1  # 标记为预测数据
                 records.append(record)
                 # records.append({
                 #     '商品编码': product_code,
@@ -141,7 +142,7 @@ class PredictionFeatureBuilder:
         # 计算日期序号（从数据开始日期算起）
         if not self.historical_sales_data.empty:
             min_date = self.historical_sales_data['日期'].min()
-            df['日期序号'] = (df['日期'] - min_date).dt.days
+            df['日期序号'] = (df['日期'] - min_date).dt.days + 1
         else:
             df['日期序号'] = 1
 
@@ -149,8 +150,7 @@ class PredictionFeatureBuilder:
         df['季节'] = df['日期'].dt.month.apply(self._get_season)
         df = df.iloc[:, 1:]
         df = df.sort_values(['日期', '时间窗口', '实际折扣率']).reset_index(drop=True)  # 重置为默认数字索引
-
-        df.to_csv("prediction.csv", encoding='utf-8')
+        save_to_csv(df)
         return df
 
     def _get_season(self, month: int) -> int:
@@ -354,109 +354,23 @@ class PredictionFeatureBuilder:
         )
 
         # 准备模型输入格式
-        # X_pred = self._prepare_for_model_prediction(features_df, model_name)
-        X_pred = self.prepare_features_for_training(features_df)
-
+        features_df, feature_columns, numeric_features, categorical_features = self.sales_predictor.excute_category_features(features_df, target_col='销售数量')
+        # feature_columns = [col for col in numeric_features + categorical_features
+        #                    if col not in ['门店编码', '商品编码', '商品名称', '日期', '折扣金额', '销售数量', '销售金额', '预测标志']]
+        feature_columns = self.sales_predictor.feature_columns['all']
+        features_df = features_df[feature_columns].copy()
+        features_df = self.sales_predictor.standard_scaler_features(features_df)
         result = {
             'product_code': product_code,
             'store_code': store_code,
             'predict_date': predict_date,
             'features_df': features_df,
-            'X_pred': X_pred,
+            'X_pred': features_df,
             'time_windows': features_df['时间窗口'].tolist(),
-            'feature_columns': X_pred.columns.tolist() if hasattr(X_pred, 'columns') else []
+            'feature_columns': feature_columns,#features_df.columns.tolist() if hasattr(features_df, 'columns') else []
         }
-
+        save_to_csv(features_df)
         return result
 
-    def _get_numeric_features(self, df):
-        """获取数值型特征"""
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        return [col for col in numeric_cols if col not in ['商品编码']]
-    def _get_categorical_features(self, df: pd.DataFrame) -> List[str]:
-        """获取分类特征列"""
-        categorical_cols = df.select_dtypes(
-            include=['category', 'object']
-        ).columns.tolist()
-
-        # 排除数值型的分类列
-        categorical_cols = [col for col in categorical_cols
-                            if col not in ['日期', '商品编码', '商品名称']]
-
-        return categorical_cols
-
-    def prepare_features_for_training(self, features_df):
-        """
-        准备训练特征
-
-        参数:
-        - features_df: 特征数据框
-        返回:
-        - X_train, X_test, y_train, y_test, feature_columns
-        """
-        # 复制数据框，避免修改原始数据
-        # df = features_df.copy()
-
-        # # 移除不需要的列
-        # columns_to_drop = ['商品编码', '日期', '预测标志']
-        # if '销售数量' in df.columns:
-        #     columns_to_drop.append('销售数量')
-        #
-        # X = df.drop(columns=[col for col in columns_to_drop if col in df.columns])
-
-        # 选择数值型特征和分类特征
-        numeric_features = self._get_numeric_features(self.historical_sales_data)
-        categorical_features = self._get_categorical_features(self.historical_sales_data)
-
-        # 移除目标变量和标识列
-        feature_columns = [col for col in numeric_features + categorical_features
-                           if col not in ['门店编码', '商品编码', '商品名称', '日期', '预测标志']]
-
-        # 准备数据
-        X = features_df[feature_columns].copy()
-
-        # 处理分类特征 - 对每个分类特征进行编码
-        for col in categorical_features:
-            if col in X.columns:
-                if col not in self.label_encoders:
-                    self.label_encoders[col] = LabelEncoder()
-                    # 处理可能的未知值
-                    X[col] = X[col].astype(str)
-                    self.label_encoders[col].fit(X[col])
-
-                X[col] = self.label_encoders[col].transform(X[col])
-
-        # 处理无穷大值和过大的值
-        X = X.replace([np.inf, -np.inf], np.nan)
 
 
-        # 填充NaN值
-        X = X.fillna(0)
-
-        # 限制数值范围，避免过大值
-        # for col in X.select_dtypes(include=[np.number]).columns:
-        #     max_val = X[col].quantile(0.99)
-        #     min_val = X[col].quantile(0.01)
-        #     X[col] = X[col].clip(min_val, max_val)
-        #
-        # # 标准化数值特征（对某些算法有帮助）
-        # if 'standard_scaler' not in self.scalers:
-        #     self.scalers['standard_scaler'] = StandardScaler()
-        #     X_scaled = self.scalers['standard_scaler'].fit_transform(X)
-        #     X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
-        # else:
-        #     X_scaled = self.scalers['standard_scaler'].transform(X)
-        #     X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
-
-        # 关键修改：确保数据按时间顺序排序后再划分
-        # 添加日期索引用于排序
-        # if '时间窗口' in features_df.columns:
-        #     # 按日期排序整个数据集
-        #     sorted_indices = features_df['时间窗口'].sort_values().index
-        #     X_scaled = X_scaled.loc[sorted_indices]
-        # 保存特征列信息
-        self.feature_columns['all'] = feature_columns
-        self.feature_columns['numeric'] = numeric_features
-        self.feature_columns['categorical'] = categorical_features
-
-        return X, feature_columns

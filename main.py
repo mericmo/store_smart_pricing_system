@@ -18,8 +18,9 @@ from discount_optimizer import DiscountOptimizer
 from prediction_manager import PredictionManager
 
 from typing import Dict, List, Optional, Union, Any
-from utils.time_utils import str_time_to_30min_slot
-from utils import common
+from utils.time_utils import str_time_to_custom_min_slot
+from utils import common, calender_helper
+from models import ModelOptimizer
 class HRMain(object):
     """
     负责数据处理、特征工程、模型训练和预测
@@ -67,9 +68,11 @@ class HRMain(object):
         print(f"统计非会员数(可能有重复)：{hsr_df['会员id'].isnull().sum()}")
 
         # 加载日历数据
-        calendar_df = pd.read_csv(self.params.raw_calendar_path)
-
-        # 加载天气
+        # calendar_df = pd.read_csv(self.params.raw_calendar_path)
+        date_series = hsr_df['日期'].unique()
+        calendar_df = calender_helper.create_china_holidays_from_date_list(date_series=date_series)
+        calendar_df.to_csv("create_china_holidays_from_date_list.csv", encoding='utf-8')
+        # 加载天气,待完善
         weather_df = pd.read_csv(self.params.raw_weather_path)
 
         # 进行数据检测
@@ -118,13 +121,16 @@ class HRMain(object):
 
         self.log.info(f'特征工程完成，生成特征数量: {len(final_features.columns)}')
         self.log.info(f'特征列表: {list(final_features.columns)}')
-
+        self.visualization_manager.plot_contrast_curves(final_features,"日期序号",['销售数量'],x_label='日期序号',file_name='taining',y_label='向量统计',title='训练数据统计',style='seaborn')
         return final_features
 
     def train_models(self, features_df):
         """训练多个模型"""
         self.log.info('开始训练模型...')
-
+        # 训练模型前统一做特征处理
+        self.sales_predictor._get_features_for_training(
+            features_df, target_col='销售数量'
+        )
         # 使用train_all_models方法训练所有模型
         trained_models = self.sales_predictor.train_all_models(features_df)
 
@@ -159,17 +165,27 @@ class HRMain(object):
             model_path = self.params.model_dir_path / f'best_model_{best_model_name}.pkl'
             self.sales_predictor.save_model(best_model_name, str(model_path))
             self.log.info(f'最佳模型已保存到: {model_path}')
-
         return comparison_df, best_model_name, trained_models
 
     def make_predictions(self, features_df, model_name=None, model=None):
         """进行预测（仅在测试集上）"""
         self.log.info('开始预测...')
+        # 首先需要获取测试集数据
+        X_train, X_test, y_train, y_test, feature_columns = self.sales_predictor._get_features_for_training(
+            features_df, target_col='销售数量'
+        )
+
+        # 创建测试集的特征DataFrame（包含原始列信息）
+        test_indices = X_test.index
+        test_features_df = features_df.loc[test_indices].copy()
+
+        X_test.to_csv("X_test.csv", encoding='utf-8')
 
         # 如果没有指定模型，使用训练好的最佳模型
         if model is None:
             # 尝试加载已保存的最佳模型
             model_files = list(self.params.model_dir_path.glob('best_model_*.pkl'))
+
             if model_files:
                 model_path = model_files[0]
                 best_model_name = model_path.stem.replace('best_model_', '')
@@ -178,14 +194,8 @@ class HRMain(object):
                 # 使用SalesPredictor的predict方法进行预测
                 try:
                     # 关键修改：只对测试集进行预测，而不是整个数据集
-                    # 首先需要获取测试集数据
-                    X_train, X_test, y_train, y_test, feature_columns = self.sales_predictor.prepare_features_for_training(
-                        features_df, target_col='销售数量'
-                    )
-                    X_test.to_csv("X_test.csv", encoding='utf-8')
-                    # 创建测试集的特征DataFrame（包含原始列信息）
-                    test_indices = X_test.index
-                    test_features_df = features_df.loc[test_indices].copy()
+
+
 
                     # 只对测试集进行预测
                     predictions = self.sales_predictor.predict(test_features_df, model_name=best_model_name)
@@ -223,13 +233,8 @@ class HRMain(object):
         else:
             # 如果提供了模型，使用提供的模型进行预测
             try:
-                # 同样只对测试集进行预测
-                X_train, X_test, y_train, y_test, feature_columns = self.sales_predictor.prepare_features_for_training(
-                    features_df, target_col='销售数量'
-                )
-                # X_test.to_csv("X_test.csv", encoding='utf-8')
-                test_indices = X_test.index
-                test_features_df = features_df.loc[test_indices].copy()
+
+
 
                 predictions = self.sales_predictor.predict(test_features_df, model_name=model_name)
 
@@ -384,7 +389,7 @@ class HRMain(object):
         # 处理日期参数
         self.log.info(f"开始预测: 商品={product_code}, 门店={store_code}, 日期={predict_time}")
 
-        time_windows = list(range(str_time_to_30min_slot(promotion_start), str_time_to_30min_slot(promotion_end)))
+        time_windows = list(range(str_time_to_custom_min_slot(promotion_start), str_time_to_custom_min_slot(promotion_end)))
 
         # 初始化预测管理器
         prediction_manager = PredictionManager(self)
@@ -470,7 +475,7 @@ if __name__ == '__main__':
         min_discount=0.4,
         max_discount=0.9,
         time_segments=2,
-        predict_time=pd.to_datetime('2025-10-31 10:21:25'),
+        predict_time=pd.to_datetime('2025-08-07 10:21:25'),
         model_name=m.best_model_name
     )
 

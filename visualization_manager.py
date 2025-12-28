@@ -6,8 +6,9 @@ import seaborn as sns
 import re
 from pathlib import Path
 from utils import common
+from typing import List
 # 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
 class VisualizationManager:
@@ -23,9 +24,7 @@ class VisualizationManager:
         """
         self.log = log
         self.result_dir_path = result_dir_path or Path("output/default/result")
-        
 
-    
     
     def visualize_results(self, results_df):
  
@@ -216,26 +215,37 @@ class VisualizationManager:
         plt.title('实际销量和预测销量分布对比')
         plt.legend()
         plt.grid(True, alpha=0.3)
-        
+
         # 3. 按销量大小分组的对比分析
         plt.subplot(2, 2, 3)
         # 修复：使用pd.cut而不是pd.qcut，避免重复边界问题
         try:
             # 尝试使用pd.qcut，如果失败则使用pd.cut
-            results_df['销量等级'] = pd.qcut(results_df['实际销量'], q=5, labels=['很低', '低', '中等', '高', '很高'], duplicates='drop')
+            results_df['销量等级'] = pd.qcut(results_df['实际销量'], q=5, labels=['很低', '低', '中等', '高', '很高'],
+                                             duplicates='drop')
         except ValueError:
             # 如果pd.qcut失败，使用等距分箱
-            unique_values = results_df['实际销量'].nunique()
-            if unique_values >= 5:
+            # 修复：获取唯一值列表，而不是唯一值数量
+            unique_values_list = results_df['实际销量'].unique().tolist()  # 获取唯一值列表
+            if len(unique_values_list) >= 5:
                 # 有足够的唯一值，使用等距分箱
-                results_df['销量等级'] = pd.cut(results_df['实际销量'], bins=5, labels=['很低', '低', '中等', '高', '很高'])
+                # 修复：使用unique_values_list而不是unique_values数量
+                min_val = results_df['实际销量'].min()
+                max_val = results_df['实际销量'].max()
+                # 创建等距分箱
+                bins = np.linspace(min_val, max_val, 6)  # 6个边界得到5个区间
+                results_df['销量等级'] = pd.cut(results_df['实际销量'], bins=bins,
+                                                labels=['很低', '低', '中等', '高', '很高'])
             else:
                 # 唯一值太少，直接使用唯一值作为等级
-                unique_vals = sorted(results_df['实际销量'].unique())
-                if len(unique_vals) >= 2:
-                    bins = [unique_vals[0] - 1] + unique_vals + [unique_vals[-1] + 1]
-                    labels = [f'等级{i+1}' for i in range(len(unique_vals))]
-                    results_df['销量等级'] = pd.cut(results_df['实际销量'], bins=bins, labels=labels, include_lowest=True)
+                if len(unique_values_list) >= 2:
+                    # 创建边界
+                    min_val = min(unique_values_list) - 0.1
+                    max_val = max(unique_values_list) + 0.1
+                    # 使用np.linspace创建合适的边界
+                    bins = np.linspace(min_val, max_val, len(unique_values_list) + 1)
+                    labels = [f'等级{i + 1}' for i in range(len(unique_values_list))]
+                    results_df['销量等级'] = pd.cut(results_df['实际销量'], bins=bins, labels=labels)
                 else:
                     # 只有一个唯一值，无法分组
                     results_df['销量等级'] = '单一值'
@@ -1019,3 +1029,145 @@ class VisualizationManager:
 
         except Exception as e:
             self.log.error(f'创建折扣报告失败: {str(e)}')
+
+    def plot_contrast_curves(self, df: pd.DataFrame,
+                             x_feature: str,
+                             y_features: List[str],
+                             file_name: str = None,
+                             figsize: tuple = (12, 8),
+                             title: str = None,
+                             x_label: str = None,
+                             y_label: str = None,
+                             style: str = 'default',
+                             use_subplots: bool = False):
+        """
+        绘制多个特征对比曲线图
+
+        参数:
+        ----------
+        df : pd.DataFrame
+            包含数据的DataFrame
+        x_feature : str
+            X轴特征列名
+        y_features : List[str]
+            Y轴特征列名列表（可以绘制多条曲线）
+        save_path : str, optional
+            保存路径，如果不提供则不保存
+        figsize : tuple, default=(12, 8)
+            图形大小
+        title : str, optional
+            图形标题
+        x_label : str, optional
+            X轴标签，默认为x_feature
+        y_label : str, optional
+            Y轴标签，默认为'Value'
+        style : str, default='default'
+            图形样式，可选：'default', 'seaborn', 'ggplot', 'fivethirtyeight'
+        use_subplots : bool, default=False
+            是否使用子图分别显示
+        **kwargs :
+            其他matplotlib绘图参数
+
+        返回:
+        -------
+        fig : matplotlib.figure.Figure
+            图形对象
+        """
+
+        # 设置中文字体（如果需要）
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        # 设置样式
+        if style in plt.style.available:
+            plt.style.use(style)
+        else:
+            plt.style.use('default')
+
+        # 检查数据
+        if x_feature not in df.columns:
+            raise ValueError(f"X轴特征 '{x_feature}' 不存在于DataFrame中")
+
+        missing_y = [y for y in y_features if y not in df.columns]
+        if missing_y:
+            raise ValueError(f"Y轴特征 {missing_y} 不存在于DataFrame中")
+
+        # 清理数据：移除NaN
+        plot_data = df[[x_feature] + y_features].dropna()
+
+        if plot_data.empty:
+            raise ValueError("数据清理后为空，请检查数据")
+
+        if use_subplots:
+            # 创建子图
+            n_features = len(y_features)
+            fig, axes = plt.subplots(n_features, 1, figsize=(figsize[0], figsize[1] * n_features / 3))
+
+            if n_features == 1:
+                axes = [axes]
+
+            for idx, y_feature in enumerate(y_features):
+                ax = axes[idx]
+                ax.plot(plot_data[x_feature], plot_data[y_feature],
+                        marker='o', markersize=4, linewidth=2)
+
+                ax.set_xlabel(x_label or x_feature, fontsize=10)
+                ax.set_ylabel(y_feature, fontsize=10)
+                ax.set_title(f'{y_feature} vs {x_feature}', fontsize=12)
+                ax.grid(True, alpha=0.3)
+                ax.legend([y_feature], loc='best')
+
+                # 旋转x轴标签如果太长
+                if plot_data[x_feature].dtype == 'object' or len(plot_data) > 20:
+                    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+            if title:
+                fig.suptitle(title, fontsize=14, y=1.02)
+
+        else:
+            # 单个图中绘制所有曲线
+            fig, ax = plt.subplots(figsize=figsize)
+
+            # 定义颜色和线型
+            colors = plt.cm.Set2(np.linspace(0, 1, len(y_features)))
+            line_styles = ['-', '--', '-.', ':']
+
+            for idx, y_feature in enumerate(y_features):
+                color = colors[idx % len(colors)]
+                line_style = line_styles[idx % len(line_styles)]
+
+                ax.plot(plot_data[x_feature], plot_data[y_feature],
+                        label=y_feature,
+                        color=color,
+                        linestyle=line_style,
+                        marker='o' if len(plot_data) <= 30 else '',
+                        markersize=5,
+                        linewidth=2.5,
+                        alpha=0.8)
+
+            # 设置标签和标题
+            ax.set_xlabel(x_label or x_feature, fontsize=12)
+            ax.set_ylabel(y_label or 'Value', fontsize=12)
+
+            if title:
+                ax.set_title(title, fontsize=14, pad=20)
+            else:
+                ax.set_title(f'{", ".join(y_features)} vs {x_feature}', fontsize=14, pad=20)
+
+            # 添加图例
+            ax.legend(loc='best', fontsize=10, framealpha=0.9)
+
+            # 添加网格
+            ax.grid(True, alpha=0.3, linestyle='--')
+
+            # 调整布局
+            plt.tight_layout()
+
+            # 如果x轴是字符串或数据点太多，旋转标签
+            if plot_data[x_feature].dtype == 'object' or len(plot_data) > 20:
+                plt.xticks(rotation=45, ha='right')
+        report_path = self.result_dir_path / f'data_curves_{file_name}.png'
+        # 保存图形
+        plt.savefig(report_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+        print(f"分析图形已保存到: {report_path}")
+        return fig

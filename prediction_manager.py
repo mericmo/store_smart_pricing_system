@@ -78,7 +78,7 @@ class PredictionManager:
                 raise ValueError(f"模型 {model_name} 不存在")
 
         # 3. 准备特征数据
-        X_pred, feature_columns = prediction_input['X_pred']
+        X_pred, feature_columns = prediction_input['X_pred'], prediction_input['feature_columns']
 
         # 确保特征列与训练时一致
         if hasattr(self.hrmain.sales_predictor, 'feature_columns'):
@@ -100,6 +100,9 @@ class PredictionManager:
         X_pred.to_csv("X_pred_1.csv", encoding='utf-8')
         # 4. 进行预测
         try:
+            # 补充验证集的数据做训练
+            # X_test,y_test = self.hrmain.sales_predictor.train_data.get('X_test'),self.hrmain.sales_predictor.train_data.get('y_test')
+            # model.fit()
             predictions = model.predict(X_pred)
 
             # 5. 创建结果DataFrame

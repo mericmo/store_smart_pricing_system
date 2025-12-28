@@ -277,7 +277,7 @@ parser.add_argument('-spr', '--sampling_rate', type=float, default=1)  # 备用�
 # parser.add_argument('-plc', '--prediction_horizon_list_csv', type=str, default='7,14,21,28')  # 预测时间范围列表
 parser.add_argument('-plc', '--prediction_horizon_list_csv', type=str, default='7')  # 预测时间范围列表
 parser.add_argument('-sc', '--store_code', type=str, default='205625')  # 预测门店信息
-parser.add_argument('-pc', '--product_code', type=str, default='1167')  # 预测产品编码
+parser.add_argument('-pc', '--product_code', type=str, default='3160860')  # 预测产品编码:8006144,1167,4834512,8005312,3160860
 # 解析命令行参数
 args = parser.parse_args()
 # 创建参数对象
