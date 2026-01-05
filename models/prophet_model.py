@@ -11,7 +11,20 @@ pio.templates.default = "plotly_white"
 class ProphetModel:
     # 在现有代码基础上添加以下方法
     def __init__(self):
-        self.models={}
+        self.models = {}
+        self.evaluation_results = {}
+        self.params = {
+                'seasonality_mode': 'multiplicative',  # 乘法季节性
+                'yearly_seasonality': True,  # 年季节性
+                'weekly_seasonality': True,  # 周季节性
+                'daily_seasonality': False,  # 日季节性（数据按天）
+                'holidays_prior_scale': 10,  # 节假日影响强度
+                'seasonality_prior_scale': 10,  # 季节性影响强度
+                'changepoint_prior_scale': 0.05,  # 趋势变化点灵敏度
+                'n_changepoints': 25,  # 变化点数量
+                'interval_width': 0.95,  # 置信区间宽度
+                'mcmc_samples': 0,  # 关闭MCMC采样以加速
+            }
     def train_prophet(self, features_df, target_col='销售数量', params=None):
         """
         训练Prophet模型
@@ -26,18 +39,7 @@ class ProphetModel:
         - Prophet模型
         """
         if params is None:
-            params = {
-                'seasonality_mode': 'multiplicative',  # 乘法季节性
-                'yearly_seasonality': True,  # 年季节性
-                'weekly_seasonality': True,  # 周季节性
-                'daily_seasonality': False,  # 日季节性（数据按天）
-                'holidays_prior_scale': 10,  # 节假日影响强度
-                'seasonality_prior_scale': 10,  # 季节性影响强度
-                'changepoint_prior_scale': 0.05,  # 趋势变化点灵敏度
-                'n_changepoints': 25,  # 变化点数量
-                'interval_width': 0.95,  # 置信区间宽度
-                'mcmc_samples': 0,  # 关闭MCMC采样以加速
-            }
+            params = self.params
 
         print("开始训练Prophet模型...")
 
@@ -61,6 +63,7 @@ class ProphetModel:
         self._add_regressors(model, features_df)
 
         # 训练模型
+        prophet_data = prophet_data[:-1]
         model.fit(prophet_data)
 
         # 保存模型
@@ -71,7 +74,7 @@ class ProphetModel:
 
         print("Prophet模型训练完成!")
 
-        return model
+        return model, prophet_data
 
     def _prepare_prophet_data(self, features_df, target_col='销售数量'):
         """
@@ -94,22 +97,22 @@ class ProphetModel:
                 return None
 
             # 确保日期列是datetime类型
-            df['日期'] = pd.to_datetime(df['日期'])
+            # df['日期'] = pd.to_datetime(df['日期'])
 
             # 按日期聚合数据（因为Prophet处理的是时间序列，通常按天）
             # 如果需要按门店和商品分别预测，这里需要调整
-            if '门店编码' in df.columns and '商品编码' in df.columns:
-                # 按日期、门店、商品分组
-                agg_data = df.groupby(['日期', '门店编码', '商品编码'])[target_col].sum().reset_index()
-                # 这里简化处理，取所有门店和商品的总和，实际应用中可能需要分别建模
-                # 或者使用分层预测
-                prophet_data = df.groupby('日期')[target_col].sum().reset_index()
-            else:
-                prophet_data = df.groupby('日期')[target_col].sum().reset_index()
+            # if '门店编码' in df.columns and '商品编码' in df.columns:
+            #     # 按日期、门店、商品分组
+            #     agg_data = df.groupby(['日期', '门店编码', '商品编码'])[target_col].sum().reset_index()
+            #     # 这里简化处理，取所有门店和商品的总和，实际应用中可能需要分别建模
+            #     # 或者使用分层预测
+            #     prophet_data = df.groupby('日期')[target_col].sum().reset_index()
+            # else:
+            #     prophet_data = df.groupby('日期')[target_col].sum().reset_index()
             # df['日期时间'] = pd.to_datetime(df['日期']) + pd.to_timedelta(df['小时'], unit='h')
             # prophet_data = df.groupby('日期时间')[target_col].sum().reset_index()
             # 重命名列以符合Prophet格式
-            prophet_data = prophet_data.rename(columns={
+            prophet_data = df.rename(columns={
                 '日期': 'ds',
                 target_col: 'y'
             })
@@ -166,19 +169,19 @@ class ProphetModel:
         regressor_cols = []
 
         # 天气相关特征
-        weather_cols = ['温度', '最高温度', '最低温度', '温度差', '是否下雨', '天气严重程度']
+        weather_cols = ['温度', '最高温度', '最低温度', '温度差', '降雨量', '天气严重程度']
         for col in weather_cols:
             if col in features_df.columns:
                 regressor_cols.append(col)
 
         # 时间相关特征
-        time_cols = ['是否周末', '是否节假日', '月份', '星期几', '季度']
+        time_cols = ['是否周末', '是否月末', '是否节假日', '节假日前一天', '节假日后一天', '节假日连续天数', '月份', '星期几', '季度', '年份']
         for col in time_cols:
             if col in features_df.columns:
                 regressor_cols.append(col)
 
-        # 促销相关特征
-        promo_cols = ['是否有促销', '折扣率', '促销天数']
+        # 促销相关特征:'促销次数'
+        promo_cols = ['是否促销', '实际折扣率', '销量_滞后1天', '销量_滞后7天', '销量_滞后14天', '销量_滞后30天','销量_7天均值', '销量_7天标准差', '销量_14天均值', '销量_14天标准差', '销量_30天均值', '销量_30天标准差', '销量_7天趋势', '销量_同比上周', '促销_周末交互', '促销_月末交互', '天气_促销交互']
         for col in promo_cols:
             if col in features_df.columns:
                 regressor_cols.append(col)
@@ -188,8 +191,8 @@ class ProphetModel:
             try:
                 # 按日期聚合回归因子（取平均值）
                 if col in features_df.columns:
-                    regressor_data = features_df.groupby('日期')[col].mean().reset_index()
-                    regressor_data = regressor_data.rename(columns={'日期': 'ds', col: col})
+                    # regressor_data = features_df.groupby('日期')[col].mean().reset_index()
+                    # regressor_data = regressor_data.rename(columns={'日期': 'ds', col: col})
 
                     # 添加回归因子到模型
                     model.add_regressor(col)
@@ -197,7 +200,7 @@ class ProphetModel:
             except Exception as e:
                 print(f"添加回归因子 {col} 时出错: {e}")
 
-    def _evaluate_prophet_model(self, model, prophet_data, cv_horizon='30 days'):
+    def _evaluate_prophet_model(self, model, prophet_data, cv_horizon='7 days'):
         """
         评估Prophet模型性能
 
@@ -244,13 +247,14 @@ class ProphetModel:
     def _simple_prophet_evaluation(self, model, prophet_data):
         """简单的Prophet模型评估"""
         try:
-            # 分割训练集和测试集（最后30天作为测试集）
+            # 分割训练集和测试集（最后20%作为测试集）
             split_idx = int(len(prophet_data) * 0.8)
             train_data = prophet_data.iloc[:split_idx]
             test_data = prophet_data.iloc[split_idx:]
 
             # 重新训练模型（仅用于评估）
-            eval_model = Prophet(**model.get_params())
+            params = self.params
+            eval_model = Prophet(**params)
             if model.holidays is not None:
                 eval_model.holidays = model.holidays
 
@@ -294,6 +298,72 @@ class ProphetModel:
         except Exception as e:
             print(f"简单评估Prophet模型时出错: {e}")
 
+    def _prepare_future_regressors(self, model, features_df, future_dates):
+        """
+        为未来日期准备回归因子数据
+
+        Args:
+            model: 已训练的Prophet模型
+            features_df: 历史特征数据
+            future_dates: 未来日期序列
+
+        Returns:
+            future_df: 包含未来日期和回归因子的DataFrame
+        """
+        future_df = pd.DataFrame({'ds': future_dates})
+
+        if not hasattr(model, 'extra_regressors') or not model.extra_regressors:
+            return future_df
+
+        # 处理每个回归因子
+        for regressor_name in model.extra_regressors.keys():
+            if regressor_name in features_df.columns:
+                # 根据回归因子类型采用不同策略填充未来值
+                col_data = features_df[regressor_name]
+
+                # 策略1: 使用历史平均值
+                if pd.api.types.is_numeric_dtype(col_data):
+                    # 数值型变量使用最近30天滚动平均值
+                    recent_data = col_data.tail(min(30, len(col_data)))
+                    if len(recent_data) > 0:
+                        # 尝试使用季节性模式（如果数据足够长）
+                        if len(col_data) >= 365:
+                            # 对每日数据进行聚合（如果数据是每日的）
+                            if '日期' in features_df.columns:
+                                daily_avg = features_df.groupby('日期')[regressor_name].mean()
+                                # 使用周模式（星期几的平均值）
+                                if len(daily_avg) >= 7:
+                                    daily_avg.index = pd.to_datetime(daily_avg.index)
+                                    weekday_avg = daily_avg.groupby(daily_avg.index.weekday).mean()
+                                    # 为未来日期填充对应的星期几平均值
+                                    future_weekdays = future_dates.weekday
+                                    future_values = future_weekdays.map(lambda x: weekday_avg.get(x, daily_avg.mean()))
+                                    future_df[regressor_name] = future_values.values
+                                else:
+                                    future_df[regressor_name] = daily_avg.mean()
+                            else:
+                                future_df[regressor_name] = recent_data.mean()
+                        else:
+                            future_df[regressor_name] = recent_data.mean()
+                    else:
+                        future_df[regressor_name] = 0
+                else:
+                    # 分类型变量使用最近一天的值
+                    if len(col_data) > 0:
+                        future_df[regressor_name] = col_data.iloc[-1]
+                    else:
+                        future_df[regressor_name] = 0
+            else:
+                # 如果历史数据中没有该回归因子，使用0
+                future_df[regressor_name] = 0
+
+        # 确保所有回归因子列都已填充，没有NaN
+        for col in future_df.columns:
+            if col != 'ds':
+                future_df[col] = future_df[col].fillna(
+                    future_df[col].mean() if pd.api.types.is_numeric_dtype(future_df[col]) else 0)
+
+        return future_df
     def predict_prophet(self, features_df, periods=7, freq='D'):
         """
         使用Prophet模型进行预测
@@ -316,21 +386,23 @@ class ProphetModel:
         future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1),
                                      periods=periods, freq=freq)
 
-        future = pd.DataFrame({'ds': future_dates})
-
-        # 添加额外回归因子（如果模型中有的话）
-        if hasattr(model, 'extra_regressors') and model.extra_regressors:
-            # 这里需要根据实际情况为未来日期提供回归因子的值
-            # 在实际应用中，可能需要基于历史数据或外部预测来提供这些值
-            for regressor in model.extra_regressors.keys():
-                # 简单处理：使用最近7天的平均值
-                if regressor in features_df.columns:
-                    recent_value = features_df[regressor].tail(7).mean()
-                    future[regressor] = recent_value
-                else:
-                    # 如果没有该回归因子的数据，使用0
-                    future[regressor] = 0
-
+        # future = pd.DataFrame({'ds': future_dates})
+        #
+        # # 添加额外回归因子（如果模型中有的话）
+        # if hasattr(model, 'extra_regressors') and model.extra_regressors:
+        #     # 这里需要根据实际情况为未来日期提供回归因子的值
+        #     # 在实际应用中，可能需要基于历史数据或外部预测来提供这些值
+        #     for regressor in model.extra_regressors.keys():
+        #         # 简单处理：使用最近7天的平均值
+        #         if regressor in features_df.columns:
+        #             # recent_value = features_df[regressor].tail(7).mean()
+        #             recent_value = features_df[regressor].tail(1)
+        #             future[regressor] = recent_value
+        #         else:
+        #             # 如果没有该回归因子的数据，使用0
+        #             future[regressor] = 0
+        # 准备包含回归因子的未来数据
+        future = self._prepare_future_regressors(model, features_df, future_dates)
         # 进行预测
         forecast = model.predict(future)
 
@@ -348,7 +420,7 @@ class ProphetModel:
 
         return result
 
-    def plot_prophet_forecast(self, features_df, forecast_periods=30):
+    def plot_prophet_forecast(self, features_df, forecast_periods=1):
         """
         绘制Prophet预测结果
 
@@ -410,7 +482,7 @@ class ProphetModel:
             return None
 
         # 创建未来数据框并预测
-        future = model.make_future_dataframe(periods=30, freq='D')
+        future = model.make_future_dataframe(periods=7, freq='D')
         forecast = model.predict(future)
 
         # 绘制组件
@@ -423,3 +495,15 @@ class ProphetModel:
         )
 
         return fig
+
+    def get_evaluation_results(self, model_name='prophet'):
+        """
+        获取评估结果
+
+        参数:
+        - model_name: 模型名称
+
+        返回:
+        - 评估结果字典
+        """
+        return self.evaluation_results.get(model_name)
