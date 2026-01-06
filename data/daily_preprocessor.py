@@ -91,6 +91,12 @@ class DailyPreprocessor:
             # '渠道名称': 'nunique',  # 销售渠道数
             # '会员id': lambda x: x.notna().sum()  # 会员购买次数
         }).reset_index()
+        # 折扣率
+        daily_agg['平均售价'] = np.where(
+            daily_agg["销售数量"] > 0,
+            (daily_agg['销售金额'] - daily_agg['折扣金额']) / daily_agg["销售数量"],
+            np.nan
+        )
         daily_agg['促销次数'] = daily_agg['是否促销']
         daily_agg['是否促销'] = (daily_agg['是否促销'] > 0).astype(int)
         # daily_agg = daily_agg.rename(columns={

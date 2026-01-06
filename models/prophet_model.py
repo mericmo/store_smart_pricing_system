@@ -4,16 +4,19 @@ import plotly.graph_objs as go
 import plotly.io as pio
 import pandas as pd
 import numpy as np
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from utils.common import save_to_csv
+import pickle
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 pio.templates.default = "plotly_white"
 
 
 class ProphetModel:
     # 在现有代码基础上添加以下方法
-    def __init__(self):
+    def __init__(self, params=None):
         self.models = {}
         self.evaluation_results = {}
-        self.params = {
+        self.params = params or {
                 'seasonality_mode': 'multiplicative',  # 乘法季节性
                 'yearly_seasonality': True,  # 年季节性
                 'weekly_seasonality': True,  # 周季节性
@@ -25,6 +28,11 @@ class ProphetModel:
                 'interval_width': 0.95,  # 置信区间宽度
                 'mcmc_samples': 0,  # 关闭MCMC采样以加速
             }
+        self.scalers = {}
+        self.scalers_columns = [
+            "年份", '温度', '最高温度', '最低温度', '温度差',
+        ]
+        self.label_encoders = {}
     def train_prophet(self, features_df, target_col='销售数量', params=None):
         """
         训练Prophet模型
@@ -52,12 +60,36 @@ class ProphetModel:
         if prophet_data is None or len(prophet_data) < 14:  # 至少需要2周数据
             print(f"数据不足或格式不正确，无法训练Prophet模型")
             return None
+        data_length_days = (prophet_data['ds'].max() - prophet_data['ds'].min()).days
+        # 计算合适的初始窗口大小以避免季节性警告
+        if data_length_days < 365:  # 如果数据不足一年
+            # 动态调整参数以适应较短的数据
+            adjusted_params = self.params.copy()
+            adjusted_params['yearly_seasonality'] = False  # 禁用年季节性
+            adjusted_params['changepoint_prior_scale'] = min(0.05, self.params.get('changepoint_prior_scale', 0.05))
+
+            # 动态设置初始窗口大小
+            initial_window = max(30, data_length_days // 4)  # 至少30天
+        else:
+            # 数据超过一年，使用原始参数
+            adjusted_params = self.params.copy()
+            initial_window = min(365, max(180, data_length_days // 3))
 
         # 创建Prophet模型
-        model = Prophet(**params)
+        model = Prophet(**adjusted_params)
+
+        # 动态设置初始窗口大小
+        model.initial = initial_window
 
         # 添加中国的节假日
         self._add_chinese_holidays(model)
+        # 数据清晰
+        numeric_features = self._get_numeric_features(features_df)
+        categorical_features = self._get_categorical_features(features_df)
+        features_columns = [col for col in numeric_features + categorical_features
+                            if col not in ['门店编码', '商品编码', '商品名称', '日期', '销售金额', '折扣金额',
+                                           target_col]]
+        features_df = features_df[features_columns].copy()
 
         # 添加额外回归因子
         self._add_regressors(model, features_df)
@@ -75,6 +107,15 @@ class ProphetModel:
         print("Prophet模型训练完成!")
 
         return model, prophet_data
+    def _get_numeric_features(self, df):
+        """获取数值型特征"""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        return [col for col in numeric_cols if col not in ['商品编码']]
+
+    def _get_categorical_features(self, df):
+        """获取分类特征"""
+        categorical_cols = df.select_dtypes(include=['category', 'object']).columns.tolist()
+        return [col for col in categorical_cols if col not in ['商品名称', '商品编码', '日期']]#'门店编码', '商品编码',
 
     def _prepare_prophet_data(self, features_df, target_col='销售数量'):
         """
@@ -122,7 +163,7 @@ class ProphetModel:
 
             # 按日期排序
             prophet_data = prophet_data.sort_values('ds').reset_index(drop=True)
-
+            save_to_csv(prophet_data)
             print(f"Prophet数据准备完成，共{len(prophet_data)}天数据")
             print(f"日期范围: {prophet_data['ds'].min()} 到 {prophet_data['ds'].max()}")
 
@@ -134,29 +175,100 @@ class ProphetModel:
 
     def _add_chinese_holidays(self, model):
         """添加中国节假日"""
-        chinese_holidays = pd.DataFrame({
-            'holiday': 'chinese_holiday',
-            'ds': pd.to_datetime([
-                # 春节（农历正月初一，这里简化使用公历近似日期）
-                '2023-01-22', '2024-02-10', '2025-01-29',
-                # 清明节
-                '2023-04-05', '2024-04-04', '2025-04-04',
-                # 劳动节
-                '2023-05-01', '2024-05-01', '2025-05-01',
-                # 端午节
-                '2023-06-22', '2024-06-10', '2025-05-31',
-                # 中秋节
-                '2023-09-29', '2024-09-17', '2025-10-06',
-                # 国庆节
-                '2023-10-01', '2024-10-01', '2025-10-01',
-            ]),
-            'lower_window': -2,  # 节前2天
-            'upper_window': 2,  # 节后2天
-        })
+        # 根据数据的时间范围动态生成节假日
+        # 获取数据的年份范围
+        if hasattr(self, '_data_min_date') and hasattr(self, '_data_max_date'):
+            min_year = self._data_min_date.year
+            max_year = self._data_max_date.year
+        else:
+            # 默认使用近3年的节假日
+            current_year = pd.Timestamp.now().year
+            min_year = current_year - 2
+            max_year = current_year + 1
 
-        # 添加节假日到模型
-        model.holidays = chinese_holidays
+        # 生成对应年份的节假日
+        holidays_list = []
 
+        for year in range(min_year, max_year + 1):
+            # 添加固定节假日
+            holidays_list.extend([
+                f"{year}-01-01",  # 元旦
+                f"{year}-05-01",  # 劳动节
+                f"{year}-10-01",  # 国庆节
+                f"{year}-10-02",  # 国庆节
+                f"{year}-10-03",  # 国庆节
+                f"{year}-10-04",  # 国庆节
+                f"{year}-10-05",  # 国庆节
+                f"{year}-10-06",  # 国庆节
+                f"{year}-10-07",  # 国庆节
+            ])
+
+            # 添加春节（需要根据农历转换，这里简化处理）
+            if year == 2023:
+                holidays_list.extend(["2023-01-21", "2023-01-22", "2023-01-23", "2023-01-24", "2023-01-25", "2023-01-26", "2023-01-27"])
+            elif year == 2024:
+                holidays_list.extend(["2024-02-10", "2024-02-11", "2024-02-12", "2024-02-13", "2024-02-14", "2024-02-15", "2024-02-16"])
+            elif year == 2025:
+                holidays_list.extend(["2025-01-29", "2025-01-30", "2025-01-31", "2025-02-01", "2025-02-02", "2025-02-03", "2025-02-04"])
+
+        # 添加其他节假日
+        for year in range(min_year, max_year + 1):
+            holidays_list.extend([
+                f"{year}-04-04",  # 清明节
+                f"{year}-04-05",
+                f"{year}-04-06",
+                f"{year}-06-10",  # 端午节（2024年）
+                f"{year}-09-15",  # 中秋节（2024年）
+                f"{year}-09-16",
+                f"{year}-09-17",
+            ])
+
+        if len(holidays_list) > 0:
+            chinese_holidays = pd.DataFrame({
+                'holiday': 'chinese_holiday',
+                'ds': pd.to_datetime(holidays_list),
+                'lower_window': -2,  # 节前2天
+                'upper_window': 2,   # 节后2天
+            })
+
+            # 添加节假日到模型
+            if hasattr(model, 'holidays') and model.holidays is not None:
+                model.holidays = pd.concat([model.holidays, chinese_holidays], ignore_index=True)
+            else:
+                model.holidays = chinese_holidays
+    def encode_categorical_features(self,df,categorical_features):
+        # 处理分类特征 - 对每个分类特征进行编码
+        for col in categorical_features:
+            if col in df.columns:
+                # 处理可能的未知值
+                if col not in self.label_encoders:
+                    self.label_encoders[col] = LabelEncoder()
+                    # 处理可能的未知值
+                    df[col] = df[col].astype(str)
+                    self.label_encoders[col].fit(df[col])
+                df[col] = self.label_encoders[col].transform(df[col])
+        save_to_csv(df)
+        return df
+
+    def standard_scaler_features(self, features_df):
+        # 限制数值范围，避免过大值
+        X = features_df.copy()
+        for col in self.scalers_columns:
+            if col in X.columns:
+                max_val = X[col].quantile(0.99)
+                min_val = X[col].quantile(0.01)
+                X[col] = X[col].clip(min_val, max_val)
+
+        # 标准化数值特征（对某些算法有帮助）
+        if 'standard_scaler' not in self.scalers:
+            self.scalers['standard_scaler'] = StandardScaler()
+            X_scaled = self.scalers['standard_scaler'].fit_transform(X)
+            X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+        else:
+            X_scaled = self.scalers['standard_scaler'].transform(X)
+            X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+        save_to_csv(X_scaled)
+        return X_scaled
     def _add_regressors(self, model, features_df):
         """
         添加额外回归因子到Prophet模型
@@ -175,22 +287,28 @@ class ProphetModel:
                 regressor_cols.append(col)
 
         # 时间相关特征
-        time_cols = ['是否周末', '是否月末', '是否节假日', '节假日前一天', '节假日后一天', '节假日连续天数', '月份', '星期几', '季度', '年份']
+        time_cols = ['是否周末', '是否月末', '是否节假日', '节假日前一天', '节假日后一天', '节假日连续天数', '月份', '星期几', '季度',  '年份']#'季节',
         for col in time_cols:
             if col in features_df.columns:
                 regressor_cols.append(col)
 
         # 促销相关特征:'促销次数'
-        promo_cols = ['是否促销', '实际折扣率', '销量_滞后1天', '销量_滞后7天', '销量_滞后14天', '销量_滞后30天','销量_7天均值', '销量_7天标准差', '销量_14天均值', '销量_14天标准差', '销量_30天均值', '销量_30天标准差', '销量_7天趋势', '销量_同比上周', '促销_周末交互', '促销_月末交互', '天气_促销交互']
+        promo_cols = ['是否促销', '平均售价', '实际折扣率', '销量_滞后1天', '销量_滞后3天', '销量_滞后7天', '销量_滞后14天', '销量_滞后30天', '销量_7天均值', '销量_7天标准差', '销量_14天均值', '销量_14天标准差', '销量_30天均值', '销量_30天标准差', '销量_7天趋势', '销量_同比上周', '促销_周末交互', '促销_月末交互', '天气_促销交互']
         for col in promo_cols:
             if col in features_df.columns:
                 regressor_cols.append(col)
 
+        features_df = features_df[regressor_cols].copy()
+        # numeric_features = self._get_numeric_features(features_df)
+        categorical_features = self._get_categorical_features(features_df)
+        # features_df = self.encode_categorical_features(features_df, categorical_features)
+        #
+        # features_df = self.standard_scaler_features(features_df)
         # 添加回归因子
         for col in regressor_cols:
             try:
                 # 按日期聚合回归因子（取平均值）
-                if col in features_df.columns:
+                if col in features_df.columns and len(features_df[col].unique()) > 1:
                     # regressor_data = features_df.groupby('日期')[col].mean().reset_index()
                     # regressor_data = regressor_data.rename(columns={'日期': 'ds', col: col})
 
@@ -300,11 +418,12 @@ class ProphetModel:
 
     def _prepare_future_regressors(self, model, features_df, future_dates):
         """
-        为未来日期准备回归因子数据
+        为未来日期准备回归因子数据 - 简化版本
+        假设features_df已经按日期聚合
 
         Args:
             model: 已训练的Prophet模型
-            features_df: 历史特征数据
+            features_df: 历史特征数据（已按日期聚合）
             future_dates: 未来日期序列
 
         Returns:
@@ -315,53 +434,63 @@ class ProphetModel:
         if not hasattr(model, 'extra_regressors') or not model.extra_regressors:
             return future_df
 
+        # 确保日期列是datetime类型
+        if '日期' in features_df.columns:
+            features_df = features_df.copy()
+            features_df['日期'] = pd.to_datetime(features_df['日期'])
+
         # 处理每个回归因子
         for regressor_name in model.extra_regressors.keys():
             if regressor_name in features_df.columns:
-                # 根据回归因子类型采用不同策略填充未来值
-                col_data = features_df[regressor_name]
+                regressor_data = features_df[regressor_name]
 
-                # 策略1: 使用历史平均值
-                if pd.api.types.is_numeric_dtype(col_data):
-                    # 数值型变量使用最近30天滚动平均值
-                    recent_data = col_data.tail(min(30, len(col_data)))
-                    if len(recent_data) > 0:
-                        # 尝试使用季节性模式（如果数据足够长）
-                        if len(col_data) >= 365:
-                            # 对每日数据进行聚合（如果数据是每日的）
-                            if '日期' in features_df.columns:
-                                daily_avg = features_df.groupby('日期')[regressor_name].mean()
-                                # 使用周模式（星期几的平均值）
-                                if len(daily_avg) >= 7:
-                                    daily_avg.index = pd.to_datetime(daily_avg.index)
-                                    weekday_avg = daily_avg.groupby(daily_avg.index.weekday).mean()
-                                    # 为未来日期填充对应的星期几平均值
-                                    future_weekdays = future_dates.weekday
-                                    future_values = future_weekdays.map(lambda x: weekday_avg.get(x, daily_avg.mean()))
-                                    future_df[regressor_name] = future_values.values
-                                else:
-                                    future_df[regressor_name] = daily_avg.mean()
-                            else:
-                                future_df[regressor_name] = recent_data.mean()
-                        else:
-                            future_df[regressor_name] = recent_data.mean()
+                # 数值型变量
+                if pd.api.types.is_numeric_dtype(regressor_data):
+                    # 方法1: 使用最近7天的平均值
+                    recent_days = min(7, len(regressor_data))
+                    recent_avg = regressor_data.tail(recent_days).mean()
+                    future_df[regressor_name] = recent_avg
+
+                    # 方法2: 对于有明显周期性的变量，考虑星期几模式
+                    if '日期' in features_df.columns and len(features_df) >= 14:
+                        # 分析星期几模式
+                        weekday_pattern = features_df.groupby(features_df['日期'].dt.weekday)[regressor_name].mean()
+
+                        # 如果有明显的星期几差异（标准差较大），使用星期几模式
+                        if weekday_pattern.std() > weekday_pattern.mean() * 0.3:  # 差异较大
+                            # 为未来日期填充对应的星期几平均值
+                            future_weekdays = future_dates.weekday
+                            future_df[regressor_name] = future_weekdays.map(
+                                lambda x: weekday_pattern.get(x, recent_avg)
+                            )
+
+                # 布尔型变量（如是否促销）
+                elif regressor_name.startswith('是否') or regressor_data.dtype == bool:
+                    # 计算历史促销频率
+                    if len(regressor_data) > 0:
+                        promo_rate = regressor_data.mean()
+                        # 按概率预测未来促销
+                        future_df[regressor_name] = (np.random.rand(len(future_dates)) < promo_rate).astype(int)
                     else:
                         future_df[regressor_name] = 0
+
+                # 其他类型
                 else:
-                    # 分类型变量使用最近一天的值
-                    if len(col_data) > 0:
-                        future_df[regressor_name] = col_data.iloc[-1]
+                    # 使用最近一天的值
+                    if len(regressor_data) > 0:
+                        future_df[regressor_name] = regressor_data.iloc[-1]
                     else:
                         future_df[regressor_name] = 0
             else:
-                # 如果历史数据中没有该回归因子，使用0
                 future_df[regressor_name] = 0
 
-        # 确保所有回归因子列都已填充，没有NaN
+        # 填充NaN值
         for col in future_df.columns:
-            if col != 'ds':
-                future_df[col] = future_df[col].fillna(
-                    future_df[col].mean() if pd.api.types.is_numeric_dtype(future_df[col]) else 0)
+            if col != 'ds' and future_df[col].isna().any():
+                if pd.api.types.is_numeric_dtype(future_df[col]):
+                    future_df[col] = future_df[col].fillna(0)
+                else:
+                    future_df[col] = future_df[col].fillna(0)
 
         return future_df
     def predict_prophet(self, features_df, periods=7, freq='D'):
@@ -443,7 +572,12 @@ class ProphetModel:
             return None
 
         # 创建未来数据框并预测
-        future = model.make_future_dataframe(periods=forecast_periods, freq='D')
+        # future = model.make_future_dataframe(periods=forecast_periods, freq='D')
+        last_date = pd.to_datetime(features_df['日期'].max())
+        future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1),
+                                     periods=forecast_periods, freq='D')
+        # 准备包含回归因子的未来数据
+        future = self._prepare_future_regressors(model, features_df, future_dates)
         forecast = model.predict(future)
 
         # 绘制预测结果
@@ -482,7 +616,12 @@ class ProphetModel:
             return None
 
         # 创建未来数据框并预测
-        future = model.make_future_dataframe(periods=7, freq='D')
+        # future = model.make_future_dataframe(periods=7, freq='D')
+        last_date = pd.to_datetime(features_df['日期'].max())
+        future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1),
+                                     periods=7, freq='D')
+        # 准备包含回归因子的未来数据
+        future = self._prepare_future_regressors(model, features_df, future_dates)
         forecast = model.predict(future)
 
         # 绘制组件
@@ -506,4 +645,49 @@ class ProphetModel:
         返回:
         - 评估结果字典
         """
-        return self.evaluation_results.get(model_name)
+        return self.evaluation_results.get(model_name, {})
+
+    def save_model(self, filepath):
+        """
+        保存训练好的模型
+
+        参数:
+        - filepath: 保存路径
+        """
+        model_data = {
+            'model': self.models.get('prophet'),
+            'scalers': self.scalers,
+            'label_encoders': self.label_encoders,
+            'evaluation_results': self.evaluation_results,
+            'feature_columns': self.feature_columns,
+            'params': self.params,
+            '_data_min_date': getattr(self, '_data_min_date', None),
+            '_data_max_date': getattr(self, '_data_max_date', None)
+        }
+
+        with open(filepath, 'wb') as f:
+            pickle.dump(model_data, f)
+
+        print(f"模型已保存到: {filepath}")
+
+    def load_model(self, filepath):
+        """
+        加载训练好的模型
+
+        参数:
+        - filepath: 加载路径
+        """
+
+        with open(filepath, 'rb') as f:
+            model_data = pickle.load(f)
+
+        self.models['prophet'] = model_data['model']
+        self.scalers = model_data['scalers']
+        self.label_encoders = model_data['label_encoders']
+        self.evaluation_results = model_data['evaluation_results']
+        self.feature_columns = model_data['feature_columns']
+        self.params = model_data['params']
+        self._data_min_date = model_data.get('_data_min_date')
+        self._data_max_date = model_data.get('_data_max_date')
+
+        print(f"模型已从 {filepath} 加载")

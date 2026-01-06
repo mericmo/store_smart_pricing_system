@@ -4,13 +4,13 @@ from data.daily_preprocessor import DailyPreprocessor
 import pandas as pd
 from utils import common, calender_helper, save_to_csv
 from data.daily_feature_store import DailyFeatureStore
-product_code = '8006144'
+product_code = '4701098'
 store_code = '205625'
 
 def train_prophet():
 
     # features_df = pd.read_csv('temp/5_preprocess_sales_data.csv', encoding='utf-8')
-    features_df = pd.read_csv('data/historical_transactions.csv', encoding='utf-8', parse_dates=['日期', '交易时间'],  dtype={"商品编码": str, "门店编码": str, "商品小类": str})
+    features_df = pd.read_csv('data/historical_transactions.csv', encoding='utf-8', parse_dates=['日期', '交易时间'],  dtype={ "商品编码": str, "门店编码": str, "商品小类": str})
 
 
     date_series = features_df['日期'].unique()
@@ -70,12 +70,12 @@ def train_prophet():
     )
     print("预测结果",result)
     # 4. 绘制Prophet预测结果
-    # fig = predictor.plot_prophet_forecast(features_df, forecast_periods=30)
-    # fig.show()
+    fig = predictor.plot_prophet_forecast(final_features, forecast_periods=30)
+    fig.show()
 
     # 5. 绘制Prophet模型组件
-    # components_fig = predictor.plot_prophet_components(features_df)
-    # components_fig.show()
+    components_fig = predictor.plot_prophet_components(final_features)
+    components_fig.show()
 
     # 6. 获取Prophet评估结果
     prophet_eval = predictor.get_evaluation_results('prophet')
