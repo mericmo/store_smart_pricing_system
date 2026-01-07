@@ -8,8 +8,8 @@ plt.rcParams['axes.unicode_minus'] = False
 location = Point(39.9042, 116.4074)
 
 # 获取2023年1月1日到1月31日的数据
-start = datetime(2025, 1, 1)
-end = datetime(2025, 1, 31)
+start = datetime(2026, 1, 5)
+end = datetime(2026, 1, 8)
 
 data = Daily(location, start, end)
 data = data.fetch()
