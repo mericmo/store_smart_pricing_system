@@ -5,8 +5,10 @@ import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 # 北京坐标
-location = Point(39.9042, 116.4074)
+# location = Point(39.9042, 116.4074)
 
+#深圳罗湖
+location = Point(22.56, 114.14)
 # 获取2023年1月1日到1月31日的数据
 start = datetime(2026, 1, 5)
 end = datetime(2026, 1, 8)

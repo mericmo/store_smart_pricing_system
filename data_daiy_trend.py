@@ -3,28 +3,34 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import warnings
 warnings.filterwarnings('ignore')
-# matplotlib.use("Agg")
+matplotlib.use("Agg")
 # 设置中文字体
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
 
-product_code = '3160860'  # 请替换为实际的产品编码
+product_code = '5276318'  # 请替换为实际的产品编码
 
 # 尝试读取数据
 try:
-    features_df = pd.read_csv('data/historical_transactions.csv', encoding='utf-8', parse_dates=['日期'],
+    features_df = pd.read_csv('data/K5.交易流水明细表2026-01-13_9_49_12_xian.csv', encoding='utf-8', parse_dates=['日期'],
                               dtype={'商品编码': str})
+    # 读取Excel文件
+    # df = pd.read_excel('data/K5.交易流水明细表2026-01-13 9_49_12_xian.xlsx')
+    #
+    # # 保存为CSV文件
+    # df.to_csv('data/K5.交易流水明细表2026-01-13_9_49_12_xian.csv', index=False)  # index=False 表示不保存索引列
     features_df = features_df[(features_df['商品编码'] == product_code) &
                               (features_df['销售数量'] > 0) &
-                              (features_df['渠道名称'] == '线下销售')]
+                              (features_df['渠道名称'] == '线上销售')]
+    product_name = features_df.iloc[0]['商品名称']
     print("共计{}条数据".format(len(features_df)))
     # 检查是否有数据
     if len(features_df) == 0:
-        print(f"警告: 没有找到产品编码为 '{product_code}' 的线下销售数据")
+        print(f"警告: 没有找到产品编码为 '{product_code}_{product_name}' 的线上销售数据")
         # 创建一个空的图表显示提示
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.text(0.5, 0.5, f"没有找到产品编码 '{product_code}' 的线下销售数据",
+        ax.text(0.5, 0.5, f"没有找到产品编码 '{product_code}_{product_name}' 的线上销售数据",
                 ha='center', va='center', transform=ax.transAxes, fontsize=14)
         ax.set_title(f"产品 {product_code} 销售分析")
         plt.show()
@@ -48,7 +54,7 @@ try:
         # 1. 原始序列
         ax1 = plt.subplot(3, 1, 1)
         ax1.plot(df.index, df['销售数量'], label='原始序列', color='blue', linewidth=1.5)
-        ax1.set_title(f'时间序列趋势 - 产品编码: {product_code}', fontsize=14, fontweight='bold')
+        ax1.set_title(f'时间序列趋势 - 产品编码: {product_code}_{product_name}', fontsize=14, fontweight='bold')
         ax1.set_xlabel('日期')
         ax1.set_ylabel('销售数量')
         ax1.legend()
